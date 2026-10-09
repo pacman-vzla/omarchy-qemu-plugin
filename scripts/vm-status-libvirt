@@ -1,0 +1,34 @@
+#!/bin/bash
+
+virsh -r -c qemu:///system list --all 2>/dev/null | tail -n +3 | while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+
+  if [[ "$line" =~ [[:space:]](shut[[:space:]]off)[[:space:]]*$ ]]; then
+    state="shut_off"
+    name=$(echo "$line" | sed 's/[[:space:]]*shut[[:space:]]off[[:space:]]*$//' | awk '{$1=""; print}' | xargs)
+  elif [[ "$line" =~ [[:space:]]([a-z]+)[[:space:]]*$ ]]; then
+    state="${BASH_REMATCH[1]}"
+    name=$(echo "$line" | awk '{$1=""; $NF=""; print}' | xargs)
+  else
+    continue
+  fi
+
+  [[ -z "$name" ]] && continue
+  printf "vm %s %s\n" "$name" "$state"
+
+  if [[ "$state" == "running" ]]; then
+    # RAM
+    ram_kb=$(virsh -r -c qemu:///system dommemstat "$name" 2>/dev/null | awk '/rss/ {print $2}')
+    ram_total=$(virsh -r -c qemu:///system dominfo "$name" 2>/dev/null | awk '/Max memory/ {print $3}')
+    [[ -n "$ram_kb" ]] && printf "vm_ram %s %s %s\n" "$name" "$ram_kb" "$ram_total"
+
+    # IP
+    ip=$(virsh -r -c qemu:///system domifaddr "$name" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}' | head -1)
+    [[ -n "$ip" ]] && printf "vm_ip %s %s\n" "$name" "$ip"
+
+    # Disco
+    alloc=$(virsh -r -c qemu:///system domstats "$name" 2>/dev/null | awk -F= '/block.0.allocation/ {print $2}')
+    cap=$(virsh -r -c qemu:///system domstats "$name" 2>/dev/null | awk -F= '/block.0.capacity/ {print $2}')
+    [[ -n "$alloc" && -n "$cap" ]] && printf "vm_disk %s %s %s\n" "$name" "$alloc" "$cap"
+  fi
+done

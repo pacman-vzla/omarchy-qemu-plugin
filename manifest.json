@@ -4,14 +4,14 @@
   "name": "QEMU VM Manager",
   "version": "1.0.0",
   "author": "dix",
-  "description": "Manage QEMU/libvirt VMs from the Omarchy bar. Start, stop and monitor VMs with IP, RAM and disk usage.",
+  "description": "Monitor standalone QEMU processes and manage libvirt VMs from the Omarchy bar.",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "QEMU VM Manager",
-    "description": "Start, stop and monitor QEMU/libvirt VMs from the bar.",
+    "description": "Monitor standalone QEMU VMs and control libvirt VMs from the bar.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

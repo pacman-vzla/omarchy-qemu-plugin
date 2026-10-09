@@ -1,34 +1,155 @@
-#!/bin/bash
+#!/usr/bin/env python3
+"""Read-only inventory of libvirt and this user's standalone QEMU processes."""
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import time
 
-virsh -c qemu:///system list --all 2>/dev/null | tail -n +3 | while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
 
-  if [[ "$line" =~ [[:space:]](shut[[:space:]]off)[[:space:]]*$ ]]; then
-    state="shut_off"
-    name=$(echo "$line" | sed 's/[[:space:]]*shut[[:space:]]off[[:space:]]*$//' | awk '{$1=""; print}' | xargs)
-  elif [[ "$line" =~ [[:space:]]([a-z]+)[[:space:]]*$ ]]; then
-    state="${BASH_REMATCH[1]}"
-    name=$(echo "$line" | awk '{$1=""; $NF=""; print}' | xargs)
-  else
-    continue
-  fi
+def option(args, key):
+    try:
+        return args[args.index(key) + 1]
+    except (ValueError, IndexError):
+        return ""
 
-  [[ -z "$name" ]] && continue
-  printf "vm %s %s\n" "$name" "$state"
 
-  if [[ "$state" == "running" ]]; then
-    # RAM
-    ram_kb=$(virsh -c qemu:///system dommemstat "$name" 2>/dev/null | awk '/rss/ {print $2}')
-    ram_total=$(virsh -c qemu:///system dominfo "$name" 2>/dev/null | awk '/Max memory/ {print $3}')
-    [[ -n "$ram_kb" ]] && printf "vm_ram %s %s %s\n" "$name" "$ram_kb" "$ram_total"
+def memory_mb(value):
+    value = value.split(",")[0].removeprefix("size=")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGT]?)", value, re.I)
+    if not match:
+        return ""
+    scale = {"": 1, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024**2}
+    return round(float(match[1]) * scale[match[2].upper()])
 
-    # IP
-    ip=$(virsh -c qemu:///system domifaddr "$name" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}' | head -1)
-    [[ -n "$ip" ]] && printf "vm_ip %s %s\n" "$name" "$ip"
 
-    # Disco
-    alloc=$(virsh -c qemu:///system domstats "$name" 2>/dev/null | awk -F= '/block.0.allocation/ {print $2}')
-    cap=$(virsh -c qemu:///system domstats "$name" 2>/dev/null | awk -F= '/block.0.capacity/ {print $2}')
-    [[ -n "$alloc" && -n "$cap" ]] && printf "vm_disk %s %s %s\n" "$name" "$alloc" "$cap"
-  fi
-done
+def monitor_status(path):
+    # HMP queries only. Never send power, disk, keyboard, or guest commands.
+    deadline = time.monotonic() + 0.4
+    def receive(sock):
+        data = b""
+        while len(data) < 65536:
+            sock.settimeout(max(0.001, deadline - time.monotonic()))
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            if data.endswith(b"(qemu) "):
+                break
+        return data.decode(errors="replace")
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.settimeout(0.1)
+            sock.connect(str(path))
+            receive(sock)
+            sock.sendall(b"info status\n")
+            result = receive(sock)
+        match = re.search(r"VM status: ([^\r\n]+)", result)
+        return match[1].strip() if match else ""
+    except OSError:
+        return ""
+
+
+def standalone(proc=Path('/proc'), uid=None):
+    uid = os.getuid() if uid is None else uid
+    result = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            args = entry.joinpath('cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
+            if not Path(args[0]).name.startswith('qemu-system-'):
+                continue
+            # libvirt owns these even when it runs QEMU as the desktop user.
+            if any('guest=' in arg and ',debug-threads=' in arg for arg in args) or any('/libvirt/qemu/' in arg for arg in args):
+                continue
+            files = []
+            for fd in entry.joinpath('fd').iterdir():
+                try:
+                    target = Path(os.readlink(fd))
+                    if target.is_absolute() and target.suffix.lower() in ('.qcow2', '.qcow', '.raw', '.img'):
+                        files.append(target)
+                except OSError:
+                    continue
+            files = sorted(set(files))
+            cwd = entry.joinpath('cwd').resolve()
+            directory = files[0].parent if files else cwd
+            name = option(args, '-name').split(',')[0].removeprefix('guest=')
+            name = name or directory.name or ('QEMU ' + entry.name)
+            status = entry.joinpath('status').read_text()
+            rss = re.search(r'^VmRSS:\s+(\d+)', status, re.M)
+            state = 'process running'
+            monitor = option(args, '-monitor')
+            if monitor.startswith('unix:'):
+                path = Path(monitor[5:].split(',')[0])
+                if not path.is_absolute():
+                    path = directory / path
+                state = monitor_status(path) or state
+            forwarded = [forward for arg in args for forward in re.findall(r'hostfwd=([^,]+)', arg)]
+            disk_bytes = sum(f.stat().st_blocks * 512 for f in files)
+            result.append(dict(
+                name=name, backend='standalone', pid=int(entry.name), state=state,
+                active=True, ram=round(int(rss[1]) / 1024) if rss else '',
+                ramTotal=memory_mb(option(args, '-m')), ip='',
+                network=', '.join(forwarded), disk='', diskTotal='',
+                diskLabel=f'Host disk allocation: {disk_bytes / 1024**3:.1f} GiB' if files else '',
+                detail=f'Standalone · PID {entry.name}',
+            ))
+        except (OSError, ValueError, IndexError):
+            # Processes can disappear or become unreadable during a refresh.
+            continue
+    return result
+
+
+def libvirt():
+    if not shutil.which('virsh'):
+        return [], ''
+    env = dict(os.environ, LC_ALL='C')
+    try:
+        check = subprocess.run(['virsh', '-r', '-c', 'qemu:///system', 'list', '--all'],
+                               capture_output=True, text=True, timeout=2, env=env)
+        if check.returncode:
+            return [], 'Libvirt unavailable; showing standalone VMs.'
+        completed = subprocess.run(['bash', str(Path(__file__).with_name('vm-status-libvirt'))],
+                                   capture_output=True, text=True, timeout=3, env=env)
+        if completed.returncode:
+            return [], 'Libvirt status failed; showing standalone VMs.'
+        vms = {}
+        for line in completed.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 3:
+                continue
+            kind = fields[0]
+            count = 2 if kind in ('vm_ram', 'vm_disk') else 1
+            name = ' '.join(fields[1:-count])
+            if kind == 'vm':
+                state = fields[-1]
+                vms[name] = dict(name=name, backend='libvirt', state=state,
+                                 active=state in ('running', 'paused'), pid=0,
+                                 ram='', ramTotal='', ip='', disk='', diskTotal='',
+                                 network='', diskLabel='', detail='Libvirt')
+            elif name in vms:
+                vm = vms[name]
+                if kind == 'vm_ip':
+                    vm['ip'] = fields[-1]
+                elif kind in ('vm_ram', 'vm_disk'):
+                    unit = 1024 if kind == 'vm_ram' else 1024**3
+                    key = 'ram' if kind == 'vm_ram' else 'disk'
+                    vm[key], vm[key + 'Total'] = [round(float(v) / unit, 1) for v in fields[-2:]]
+        return list(vms.values()), ''
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return [], 'Libvirt status unavailable; showing standalone VMs.'
+
+
+def main():
+    managed, warning = libvirt()
+    print(json.dumps(dict(vms=managed + standalone(), warning=warning)))
+
+
+if __name__ == '__main__':
+    main()

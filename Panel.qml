@@ -26,6 +26,7 @@ Panel {
   IpcHandler {
     target: root.ipcTarget
     function refresh(): string { service.refresh(); return "ok" }
+    function status(): string { return JSON.stringify({vms: service.vms, warning: service.warning}) }
   }
 
   BarIconButton {
@@ -68,8 +69,8 @@ Panel {
         width: parent.width
         title: "QEMU VMs"
         meta: service.runningCount > 0
-          ? service.runningCount + " corriendo"
-          : "Todas detenidas"
+          ? service.runningCount + " active"
+          : (service.vms.length ? "All stopped" : "No VMs detected")
         foreground: root.foreground
         fontFamily: root.fontFamily
         iconOpacity: service.runningCount > 0 ? 1.0 : 0.5
@@ -81,6 +82,17 @@ Panel {
             font.pixelSize: Style.font.display
           }
         }
+      }
+
+      Text {
+        visible: service.warning !== ""
+        text: service.warning
+        textFormat: Text.PlainText
+        color: root.dim
+        width: parent.width
+        wrapMode: Text.WordWrap
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
 
       PanelSeparator {
@@ -97,14 +109,13 @@ Panel {
           delegate: Item {
             required property var modelData
             width: parent.width - Style.space(8)
-            implicitHeight: modelData.state === "running"
-              ? Style.space(44) + Style.space(52)
-              : Style.space(44)
+            implicitHeight: rowContent.implicitHeight
 
-            readonly property bool isRunning: modelData.state === "running"
+            readonly property bool isRunning: modelData.active
 
             Column {
-              anchors.fill: parent
+              id: rowContent
+              width: parent.width
               spacing: 0
 
               RowLayout {
@@ -126,7 +137,7 @@ Panel {
 
                   Text {
                     text: modelData.name
-		    textFormat: Text.PlainText
+                    textFormat: Text.PlainText
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
@@ -136,8 +147,8 @@ Panel {
                   }
 
                   Text {
-                    text: isRunning ? "Corriendo" : "Detenida"
-		    textFormat: Text.PlainText
+                    text: modelData.detail + " · " + modelData.state.replace(/_/g, " ")
+                    textFormat: Text.PlainText
                     color: isRunning ? "#50fa7b" : root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -145,6 +156,7 @@ Panel {
                 }
 
                 Rectangle {
+                  visible: modelData.backend === "libvirt"
                   width: Style.space(64)
                   height: Style.space(28)
                   radius: Style.space(4)
@@ -154,8 +166,8 @@ Panel {
 
                   Text {
                     anchors.centerIn: parent
-                    text: isRunning ? "Apagar" : "Iniciar"
-		    textFormat: Text.PlainText
+                    text: isRunning ? "Shutdown" : "Start"
+                    textFormat: Text.PlainText
                     color: isRunning ? "#ff5555" : "#50fa7b"
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -185,9 +197,27 @@ Panel {
                 bottomPadding: Style.space(8)
 
                 Text {
+                  visible: modelData.network !== ""
+                  text: "Forwarding: " + modelData.network
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  width: parent.width - Style.space(30)
+                  wrapMode: Text.WrapAnywhere
+                }
+                Text {
+                  visible: modelData.diskLabel !== ""
+                  text: modelData.diskLabel
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+                Text {
                   visible: modelData.ip !== ""
                   text: "IP: " + modelData.ip
-		  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -195,8 +225,10 @@ Panel {
 
                 Text {
                   visible: modelData.ram !== ""
-                  text: "RAM: " + modelData.ram + " / " + modelData.ramTotal + " MB"
-		  textFormat: Text.PlainText
+                  width: parent.width - Style.space(30)
+                  wrapMode: Text.WordWrap
+                  text: "Host RSS: " + modelData.ram + " MiB" + (modelData.ramTotal !== "" ? " · Guest RAM: " + modelData.ramTotal + " MiB" : "")
+                  textFormat: Text.PlainText
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -204,8 +236,8 @@ Panel {
 
                 Text {
                   visible: modelData.disk !== ""
-                  text: "Disco: " + modelData.disk + " / " + modelData.diskTotal + " GB"
-		  textFormat: Text.PlainText
+                  text: "Disk: " + modelData.disk + " / " + modelData.diskTotal + " GiB"
+                  textFormat: Text.PlainText
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption

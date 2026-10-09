@@ -10,6 +10,9 @@ case "$1" in
     sed -i 's/"Disk:"/"Disco:"/g' "$PANEL"
     sed -i 's/"All stopped"/"Todas detenidas"/g' "$PANEL"
     sed -i 's/" running"/" corriendo"/g' "$PANEL"
+    sed -i 's/" active"/" activas"/g' "$PANEL"
+    sed -i 's/"No VMs detected"/"Ninguna VM detectada"/g' "$PANEL"
+    sed -i 's/"Disk: "/"Disco: "/g' "$PANEL"
     echo "Language set to Spanish"
     ;;
   en)
@@ -20,6 +23,9 @@ case "$1" in
     sed -i 's/"Disco:"/"Disk:"/g' "$PANEL"
     sed -i 's/"Todas detenidas"/"All stopped"/g' "$PANEL"
     sed -i 's/" corriendo"/" running"/g' "$PANEL"
+    sed -i 's/" activas"/" active"/g' "$PANEL"
+    sed -i 's/"Ninguna VM detectada"/"No VMs detected"/g' "$PANEL"
+    sed -i 's/"Disco: "/"Disk: "/g' "$PANEL"
     echo "Language set to English"
     ;;
   *)

@@ -1,34 +1,87 @@
 #!/bin/bash
+# Emits tab-separated records consumed by Service.qml:
+#   vm      <name> <state>
+#   vm_ram  <name> <used_kib> <max_kib> [<reclaimable_cache_kib>]
+#   vm_cpu  <name> <cpu_time_ns> <vcpus>
+#   vm_disk <name> <alloc_bytes> <capacity_bytes>
+#   vm_ip   <name> <ipv4>
+#   error   <message>
 
-virsh -c qemu:///system list --all 2>/dev/null | tail -n +3 | while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
+# virsh output is localized (e.g. "ejecutando" instead of "running"); force C locale
+export LC_ALL=C
+V=(virsh -c qemu:///system)
 
-  if [[ "$line" =~ [[:space:]](shut[[:space:]]off)[[:space:]]*$ ]]; then
-    state="shut_off"
-    name=$(echo "$line" | sed 's/[[:space:]]*shut[[:space:]]off[[:space:]]*$//' | awk '{$1=""; print}' | xargs)
-  elif [[ "$line" =~ [[:space:]]([a-z]+)[[:space:]]*$ ]]; then
-    state="${BASH_REMATCH[1]}"
-    name=$(echo "$line" | awk '{$1=""; $NF=""; print}' | xargs)
-  else
-    continue
-  fi
+if ! names=$("${V[@]}" list --all --name 2>/dev/null); then
+  printf 'error\tlibvirt\n'
+  exit 0
+fi
 
+while IFS= read -r name; do
   [[ -z "$name" ]] && continue
-  printf "vm %s %s\n" "$name" "$state"
+  state=$("${V[@]}" domstate "$name" 2>/dev/null | head -1)
+  state=${state// /_}
+  printf 'vm\t%s\t%s\n' "$name" "${state:-unknown}"
+done <<< "$names"
 
-  if [[ "$state" == "running" ]]; then
-    # RAM
-    ram_kb=$(virsh -c qemu:///system dommemstat "$name" 2>/dev/null | awk '/rss/ {print $2}')
-    ram_total=$(virsh -c qemu:///system dominfo "$name" 2>/dev/null | awk '/Max memory/ {print $3}')
-    [[ -n "$ram_kb" ]] && printf "vm_ram %s %s %s\n" "$name" "$ram_kb" "$ram_total"
+# One domstats call covers RAM, CPU and disk for every running VM.
+stats=$("${V[@]}" domstats --list-running --balloon --cpu-total --vcpu --block 2>/dev/null)
+now=$(date +%s)
 
-    # IP
-    ip=$(virsh -c qemu:///system domifaddr "$name" 2>/dev/null | awk '/ipv4/ {split($4,a,"/"); print a[1]}' | head -1)
-    [[ -n "$ip" ]] && printf "vm_ip %s %s\n" "$name" "$ip"
-
-    # Disco
-    alloc=$(virsh -c qemu:///system domstats "$name" 2>/dev/null | awk -F= '/block.0.allocation/ {print $2}')
-    cap=$(virsh -c qemu:///system domstats "$name" 2>/dev/null | awk -F= '/block.0.capacity/ {print $2}')
-    [[ -n "$alloc" && -n "$cap" ]] && printf "vm_disk %s %s %s\n" "$name" "$alloc" "$cap"
-  fi
+# Guest memory stats only refresh when a collection period is set (libvirt
+# defaults to 0, so they freeze at boot). Enable it for VMs whose stats are stale.
+awk -v now="$now" '
+  /^Domain: / { dom = $0; sub(/^Domain: '\''/, "", dom); sub(/'\''$/, "", dom) }
+  /balloon\.last-update=/ { split($0, a, "="); if (now - a[2] > 30) print dom }
+' <<< "$stats" | while IFS= read -r name; do
+  "${V[@]}" dommemstat "$name" --period 5 --live >/dev/null 2>&1
 done
+
+awk -v now="$now" '
+  function flush() {
+    if (dom == "") return
+    # Prefer fresh guest-reported usage (virtio balloon driver); otherwise host RSS.
+    if (avail != "" && usable != "" && updated != "" && now - updated <= 30)
+      printf "vm_ram\t%s\t%d\t%s\t%d\n", dom, avail - usable, maxmem, (unused != "" ? usable - unused : 0)
+    else if (rss != "") printf "vm_ram\t%s\t%s\t%s\n", dom, rss, maxmem
+    if (cpu != "") printf "vm_cpu\t%s\t%s\t%s\n", dom, cpu, vcpus
+    alloc = 0; cap = 0
+    for (i in bcap) if (!(i in iso)) { alloc += balloc[i]; cap += bcap[i] }
+    if (cap > 0) printf "vm_disk\t%s\t%d\t%d\n", dom, alloc, cap
+  }
+  /^Domain: / {
+    flush()
+    dom = $0; sub(/^Domain: '\''/, "", dom); sub(/'\''$/, "", dom)
+    rss = ""; maxmem = ""; avail = ""; usable = ""; unused = ""; updated = ""; cpu = ""; vcpus = 1
+    delete bcap; delete balloc; delete iso
+    next
+  }
+  {
+    line = $0; sub(/^[ \t]+/, "", line)
+    k = substr(line, 1, index(line, "=") - 1); v = substr(line, index(line, "=") + 1)
+    if (k == "balloon.rss") rss = v
+    else if (k == "balloon.maximum") maxmem = v
+    else if (k == "balloon.available") avail = v
+    else if (k == "balloon.usable") usable = v
+    else if (k == "balloon.unused") unused = v
+    else if (k == "balloon.last-update") updated = v
+    else if (k == "cpu.time") cpu = v
+    else if (k == "vcpu.current") vcpus = v
+    else if (k ~ /^block\.[0-9]+\.capacity$/) { split(k, p, "."); bcap[p[2]] = v }
+    else if (k ~ /^block\.[0-9]+\.allocation$/) { split(k, p, "."); balloc[p[2]] = v }
+    else if (k ~ /^block\.[0-9]+\.path$/ && tolower(v) ~ /\.iso$/) { split(k, p, "."); iso[p[2]] = 1 }
+  }
+  END { flush() }
+' <<< "$stats"
+
+# IPs: DHCP leases first, then the ARP table as a fallback.
+"${V[@]}" list --state-running --name 2>/dev/null | while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  ip=""
+  for src in lease arp; do
+    ip=$("${V[@]}" domifaddr "$name" --source "$src" 2>/dev/null \
+      | awk '$3 == "ipv4" { split($4, a, "/"); print a[1]; exit }')
+    [[ -n "$ip" ]] && break
+  done
+  [[ -n "$ip" ]] && printf 'vm_ip\t%s\t%s\n' "$name" "$ip"
+done
+exit 0

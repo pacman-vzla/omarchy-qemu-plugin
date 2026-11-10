@@ -1,0 +1,21 @@
+#!/bin/bash
+# Verifies every Text { } block in Panel.qml sets textFormat: Text.PlainText,
+# so VM names/IPs from libvirt can never be rendered as rich text.
+PANEL="$(dirname "$(dirname "$(readlink -f "$0")")")/Panel.qml"
+
+missing=$(awk '
+  /^[[:space:]]*Text[[:space:]]*\{/ { inText = 1; start = NR; depth = 0; plain = 0 }
+  inText {
+    depth += gsub(/\{/, "{"); depth -= gsub(/\}/, "}")
+    if ($0 ~ /textFormat:[[:space:]]*Text\.PlainText/) plain = 1
+    if (depth == 0) { if (!plain) print start; inText = 0 }
+  }
+' "$PANEL")
+
+total=$(grep -cE '^[[:space:]]*Text[[:space:]]*\{' "$PANEL")
+if [[ -z "$missing" ]]; then
+  echo "✓ All $total Text blocks use textFormat: Text.PlainText"
+else
+  echo "✗ Text blocks missing textFormat: Text.PlainText at Panel.qml lines:" $missing
+  exit 1
+fi

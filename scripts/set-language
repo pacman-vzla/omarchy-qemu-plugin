@@ -1,31 +1,15 @@
 #!/bin/bash
-PANEL="$(dirname "$(dirname "$0")")/Panel.qml"
+# Switch the widget language. Applies live and survives plugin updates.
+STATE="$HOME/.local/state/dix.qemu"
 
 case "$1" in
-  es)
-    sed -i 's/"Running"/"Corriendo"/g' "$PANEL"
-    sed -i 's/"Stopped"/"Detenida"/g' "$PANEL"
-    sed -i 's/"Start"/"Iniciar"/g' "$PANEL"
-    sed -i 's/"Shutdown"/"Apagar"/g' "$PANEL"
-    sed -i 's/"Disk:"/"Disco:"/g' "$PANEL"
-    sed -i 's/"All stopped"/"Todas detenidas"/g' "$PANEL"
-    sed -i 's/" running"/" corriendo"/g' "$PANEL"
-    echo "Language set to Spanish"
-    ;;
-  en)
-    sed -i 's/"Corriendo"/"Running"/g' "$PANEL"
-    sed -i 's/"Detenida"/"Stopped"/g' "$PANEL"
-    sed -i 's/"Iniciar"/"Start"/g' "$PANEL"
-    sed -i 's/"Apagar"/"Shutdown"/g' "$PANEL"
-    sed -i 's/"Disco:"/"Disk:"/g' "$PANEL"
-    sed -i 's/"Todas detenidas"/"All stopped"/g' "$PANEL"
-    sed -i 's/" corriendo"/" running"/g' "$PANEL"
-    echo "Language set to English"
+  es|en)
+    mkdir -p "$STATE"
+    printf '%s\n' "$1" > "$STATE/lang"
+    echo "Language set to $1"
     ;;
   *)
     echo "Usage: set-language [en|es]"
     exit 1
     ;;
 esac
-
-omarchy restart shell

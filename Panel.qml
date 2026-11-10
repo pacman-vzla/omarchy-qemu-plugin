@@ -11,208 +11,619 @@ Panel {
   ipcTarget: "dix.qemu"
   manageIpc: false
 
+  // Language: "es" (default) or "en". Stored outside the plugin folder so it
+  // survives plugin updates; scripts/set-language writes it and the panel
+  // picks it up live.
+  readonly property string langFile: Quickshell.env("HOME") + "/.local/state/dix.qemu/lang"
+  property string lang: "es"
+
+  FileView {
+    id: langView
+    path: root.langFile
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      var v = String(text() || "").trim()
+      root.lang = (v === "en" || v === "es") ? v : "es"
+    }
+    // A missing file can't be watched: create it with the default, then reload.
+    onLoadFailed: {
+      root.lang = "es"
+      if (!createLang.running) createLang.running = true
+    }
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: createLang
+    command: ["sh", "-c", 'mkdir -p "$(dirname "$1")" && { [ -s "$1" ] || echo es > "$1"; }', "sh", root.langFile]
+    onExited: function(code) { if (code === 0) langView.reload() }
+  }
+
+  readonly property var strings: ({
+    es: {
+      title: "Máquinas virtuales", allStopped: "Todas apagadas", of: "de", running: "en ejecución",
+      active: "Activas", stopped: "Apagadas", none: "No hay máquinas virtuales en libvirt",
+      noLibvirt: "No se pudo conectar a libvirt", loading: "Cargando…",
+      stRunning: "En ejecución", stOff: "Apagada", stPaused: "En pausa", stCrashed: "Falló",
+      starting: "Iniciando…", stopping: "Apagando…", resuming: "Reanudando…",
+      start: "Iniciar", shutdown: "Apagar", force: "Forzar apagado", console: "Abrir consola",
+      resume: "Reanudar", manager: "Abrir virt-manager", refresh: "Actualizar",
+      copyIp: "Copiar IP", copied: "IP copiada", waitingIp: "Esperando IP…",
+      cpu: "CPU", ram: "RAM", disk: "Disco", cache: "caché", failed: "No se pudo iniciar"
+    },
+    en: {
+      title: "Virtual machines", allStopped: "All stopped", of: "of", running: "running",
+      active: "Active", stopped: "Stopped", none: "No virtual machines in libvirt",
+      noLibvirt: "Could not connect to libvirt", loading: "Loading…",
+      stRunning: "Running", stOff: "Stopped", stPaused: "Paused", stCrashed: "Crashed",
+      starting: "Starting…", stopping: "Shutting down…", resuming: "Resuming…",
+      start: "Start", shutdown: "Shut down", force: "Force off", console: "Open console",
+      resume: "Resume", manager: "Open virt-manager", refresh: "Refresh",
+      copyIp: "Copy IP", copied: "IP copied", waitingIp: "Waiting for IP…",
+      cpu: "CPU", ram: "RAM", disk: "Disk", cache: "cache", failed: "Failed to start"
+    }
+  })
+  function t(key) {
+    var s = strings[lang] || strings.es
+    return s[key] !== undefined ? s[key] : key
+  }
+
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
+  readonly property color accent: Color.accent
+  readonly property color urgent: Color.urgent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color accent: service.runningCount > 0 ? "#50fa7b" : Qt.darker(foreground, 1.55)
+  readonly property bool anyRunning: service.runningCount > 0
+
+  readonly property color cardFill: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.045)
+  readonly property color cardBorder: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.10)
+  readonly property color trackColor: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.10)
+
+  function fmtMem(mb) {
+    return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB"
+  }
+  function fmtGb(gb) {
+    return gb >= 100 ? Math.round(gb) + "" : gb.toFixed(1)
+  }
+  function meterColor(frac) {
+    return frac >= 0.9 ? root.urgent : root.accent
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   Service {
     id: service
+    fast: root.opened
   }
+  // Inline components below can't see document ids; they go through root.svc.
+  readonly property alias svc: service
 
   IpcHandler {
     target: root.ipcTarget
     function refresh(): string { service.refresh(); return "ok" }
+    function start(name: string): string { service.start(name); return "ok" }
+    function shutdown(name: string): string { service.stop(name); return "ok" }
   }
 
+  // ------------------------------------------------------------------ bar
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    iconComponent: Component {
-      Item {
-        implicitWidth: Style.space(24)
-        implicitHeight: Style.space(20)
-        Text {
-          anchors.centerIn: parent
-          text: "󰟀"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.space(13)
-        }
-      }
-    }
+    text: "󰟀"
+    tooltipText: ""
+    // Accent color while any VM is running, dimmed when all are off.
+    foreground: root.anyRunning
+      ? root.accent
+      : Qt.darker(root.bar ? root.bar.barForeground : Color.foreground, 1.5)
+    Behavior on foreground { ColorAnimation { duration: 250 } }
+
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()
+      else if (buttonCode === Qt.RightButton) service.openManager()
     }
   }
 
+  // ---------------------------------------------------------------- panel
   KeyboardPanel {
     id: panel
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(col.implicitHeight, Style.space(500))
+    contentWidth: panel.fittedContentWidth(Style.space(340))
+    contentHeight: panel.fittedContentHeight(col.implicitHeight, Style.space(560))
 
-    Column {
-      id: col
-      width: parent.width
-      spacing: Style.space(12)
-
-      PanelHero {
-        width: parent.width
-        title: "QEMU VMs"
-        meta: service.runningCount > 0
-          ? service.runningCount + " corriendo"
-          : "Todas detenidas"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        iconOpacity: service.runningCount > 0 ? 1.0 : 0.5
-        iconComponent: Component {
-          Text {
-            text: "󰟀"
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.display
-          }
-        }
-      }
-
-      PanelSeparator {
-        foreground: root.foreground
-      }
+    Flickable {
+      anchors.fill: parent
+      contentHeight: col.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
 
       Column {
+        id: col
         width: parent.width
-        spacing: Style.space(6)
-        padding: Style.space(4)
+        spacing: Style.space(12)
 
-        Repeater {
-          model: service.vms
-          delegate: Item {
-            required property var modelData
-            width: parent.width - Style.space(8)
-            implicitHeight: modelData.state === "running"
-              ? Style.space(44) + Style.space(52)
-              : Style.space(44)
-
-            readonly property bool isRunning: modelData.state === "running"
-
-            Column {
-              anchors.fill: parent
-              spacing: 0
-
-              RowLayout {
-                width: parent.width
-                height: Style.space(44)
-                spacing: Style.space(8)
-
-                Text {
-                  text: isRunning ? "󰐊" : "󰓛"
-                  color: isRunning ? "#50fa7b" : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(14)
-                  leftPadding: Style.space(8)
-                }
-
-                Column {
-                  Layout.fillWidth: true
-                  spacing: Style.space(1)
-
-                  Text {
-                    text: modelData.name
-		    textFormat: Text.PlainText
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    font.bold: isRunning
-                    elide: Text.ElideRight
-                    width: parent.width
-                  }
-
-                  Text {
-                    text: isRunning ? "Corriendo" : "Detenida"
-		    textFormat: Text.PlainText
-                    color: isRunning ? "#50fa7b" : root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-
-                Rectangle {
-                  width: Style.space(64)
-                  height: Style.space(28)
-                  radius: Style.space(4)
-                  color: isRunning
-                    ? Qt.rgba(1, 0.2, 0.2, 0.15)
-                    : Qt.rgba(0.31, 0.98, 0.48, 0.15)
-
-                  Text {
-                    anchors.centerIn: parent
-                    text: isRunning ? "Apagar" : "Iniciar"
-		    textFormat: Text.PlainText
-                    color: isRunning ? "#ff5555" : "#50fa7b"
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    font.bold: true
-                  }
-
-                  MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    enabled: !service.busy
-                    onClicked: {
-                      if (isRunning) service.stop(modelData.name)
-                      else {
-                        service.start(modelData.name)
-                        service.open(modelData.name)
-                      }
-                    }
-                  }
-                }
-              }
-
-              Column {
-                visible: isRunning
-                width: parent.width
-                spacing: Style.space(2)
-                leftPadding: Style.space(30)
-                bottomPadding: Style.space(8)
-
-                Text {
-                  visible: modelData.ip !== ""
-                  text: "IP: " + modelData.ip
-		  textFormat: Text.PlainText
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                Text {
-                  visible: modelData.ram !== ""
-                  text: "RAM: " + modelData.ram + " / " + modelData.ramTotal + " MB"
-		  textFormat: Text.PlainText
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
-
-                Text {
-                  visible: modelData.disk !== ""
-                  text: "Disco: " + modelData.disk + " / " + modelData.diskTotal + " GB"
-		  textFormat: Text.PlainText
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                }
+        PanelHero {
+          width: parent.width
+          title: root.t("title")
+          meta: !service.loaded ? root.t("loading")
+            : service.error ? root.t("noLibvirt")
+            : root.anyRunning
+              ? service.runningCount + " " + root.t("of") + " " + service.vms.length + " " + root.t("running")
+              : root.t("allStopped")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          iconComponent: Component {
+            Rectangle {
+              implicitWidth: Style.space(42)
+              implicitHeight: Style.space(42)
+              radius: Style.cornerRadius > 0 ? Style.space(10) : 0
+              color: root.anyRunning
+                ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+                : root.cardFill
+              border.width: 1
+              border.color: root.anyRunning
+                ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                : root.cardBorder
+              Behavior on color { ColorAnimation { duration: 250 } }
+              Text {
+                anchors.centerIn: parent
+                text: "󰟀"
+                textFormat: Text.PlainText
+                color: root.anyRunning ? root.accent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.iconLarge + Style.space(4)
               }
             }
           }
+          trailingControl: Component {
+            Row {
+              spacing: Style.space(2)
+              PanelActionButton {
+                iconText: "󰑐"
+                tooltipText: root.t("refresh")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: service.refresh()
+              }
+              PanelActionButton {
+                iconText: "󰙵"
+                tooltipText: root.t("manager")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: { service.openManager(); root.close() }
+              }
+            }
+          }
+        }
+
+        PanelSeparator { foreground: root.foreground }
+
+        // Empty / error state
+        Text {
+          visible: service.loaded && (service.error || service.vms.length === 0)
+          width: parent.width
+          horizontalAlignment: Text.AlignHCenter
+          topPadding: Style.space(10)
+          bottomPadding: Style.space(10)
+          text: service.error ? root.t("noLibvirt") : root.t("none")
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        // Active VMs
+        Column {
+          visible: service.activeVms.length > 0
+          width: parent.width
+          spacing: Style.space(8)
+
+          PanelSectionHeader {
+            text: root.t("active")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+          Repeater {
+            model: service.activeVms
+            VmCard {
+              required property var modelData
+              width: parent.width
+              vm: modelData
+            }
+          }
+        }
+
+        // Stopped VMs
+        Column {
+          visible: service.stoppedVms.length > 0
+          width: parent.width
+          spacing: Style.space(4)
+
+          PanelSectionHeader {
+            text: root.t("stopped")
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+          Repeater {
+            model: service.stoppedVms
+            StoppedRow {
+              required property var modelData
+              width: parent.width
+              vm: modelData
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ----------------------------------------------------------- components
+
+  // Pulsing status dot.
+  component StatusDot: Item {
+    id: dot
+    property color color: root.accent
+    property bool live: true
+    property bool hollow: false
+    implicitWidth: Style.space(10)
+    implicitHeight: Style.space(10)
+
+    Rectangle {
+      anchors.centerIn: parent
+      width: parent.width; height: width; radius: width / 2
+      color: dot.color
+      visible: dot.live
+      SequentialAnimation on opacity {
+        running: dot.live && root.opened
+        loops: Animation.Infinite
+        NumberAnimation { from: 0.45; to: 0; duration: 1400; easing.type: Easing.OutQuad }
+        PauseAnimation { duration: 300 }
+      }
+      SequentialAnimation on scale {
+        running: dot.live && root.opened
+        loops: Animation.Infinite
+        NumberAnimation { from: 1; to: 2.2; duration: 1400; easing.type: Easing.OutQuad }
+        PauseAnimation { duration: 300 }
+      }
+    }
+    Rectangle {
+      anchors.centerIn: parent
+      width: Style.space(7); height: width; radius: width / 2
+      color: dot.hollow ? "transparent" : dot.color
+      border.width: dot.hollow ? 1 : 0
+      border.color: dot.color
+    }
+  }
+
+  // Labeled progress bar.
+  component Meter: Item {
+    id: meter
+    property string icon: ""
+    property string label: ""
+    property string value: ""
+    property real frac: 0
+    // Optional secondary segment drawn after `frac` (e.g. reclaimable cache).
+    property real extraFrac: 0
+    property bool known: true
+    width: parent ? parent.width : 0
+    implicitHeight: meterLabels.implicitHeight + Style.space(4) + meterTrack.height
+
+    RowLayout {
+      id: meterLabels
+      width: parent.width
+      spacing: Style.space(6)
+      Text {
+        text: meter.icon
+        textFormat: Text.PlainText
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+      Text {
+        text: meter.label
+        textFormat: Text.PlainText
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Item { Layout.fillWidth: true }
+      Text {
+        text: meter.known ? meter.value : "—"
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+    Rectangle {
+      id: meterTrack
+      anchors.top: meterLabels.bottom
+      anchors.topMargin: Style.space(4)
+      width: parent.width
+      height: Style.space(4)
+      radius: height / 2
+      color: root.trackColor
+      Rectangle {
+        height: parent.height
+        radius: parent.radius
+        width: meter.known && meter.extraFrac > 0
+          ? parent.width * Math.max(0, Math.min(1, meter.frac + meter.extraFrac)) : 0
+        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+        Behavior on width { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
+      }
+      Rectangle {
+        height: parent.height
+        radius: parent.radius
+        width: meter.known ? Math.max(height, parent.width * Math.max(0, Math.min(1, meter.frac))) : 0
+        color: root.meterColor(meter.frac)
+        Behavior on width { NumberAnimation { duration: 450; easing.type: Easing.OutCubic } }
+        Behavior on color { ColorAnimation { duration: 300 } }
+      }
+    }
+  }
+
+  // Card for running / paused / transitioning VMs.
+  component VmCard: Rectangle {
+    id: card
+    property var vm
+    readonly property bool running: vm.state === "running"
+    readonly property bool paused: vm.state === "paused"
+    readonly property bool busy: vm.pending !== ""
+    readonly property string statusText: vm.pending === "starting" ? root.t("starting")
+      : vm.pending === "stopping" ? root.t("stopping")
+      : vm.pending === "resuming" ? root.t("resuming")
+      : paused ? root.t("stPaused")
+      : running ? root.t("stRunning") : vm.state
+    property bool ipCopied: false
+
+    radius: Style.cornerRadius > 0 ? Style.space(10) : 0
+    color: root.cardFill
+    border.width: 1
+    border.color: cardMouse.containsMouse
+      ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+      : root.cardBorder
+    Behavior on border.color { ColorAnimation { duration: 150 } }
+    implicitHeight: cardCol.implicitHeight + Style.space(24)
+
+    MouseArea { id: cardMouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+
+    Timer { id: copiedTimer; interval: 1500; onTriggered: card.ipCopied = false }
+
+    Column {
+      id: cardCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.margins: Style.space(12)
+      spacing: Style.space(10)
+
+      // Header: dot, name, status, actions
+      RowLayout {
+        width: parent.width
+        spacing: Style.space(10)
+
+        StatusDot {
+          Layout.alignment: Qt.AlignVCenter
+          color: card.paused ? root.dim : root.accent
+          live: card.running && !card.busy
+          hollow: card.busy || card.paused
+        }
+
+        Column {
+          Layout.fillWidth: true
+          spacing: Style.space(1)
+          Text {
+            width: parent.width
+            text: card.vm.name
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            text: card.statusText + (card.running && card.vm.vcpus > 0 && !card.busy ? " · " + card.vm.vcpus + " vCPU" : "")
+            textFormat: Text.PlainText
+            color: card.busy || card.paused ? root.dim : root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+
+        PanelActionButton {
+          visible: card.running
+          iconText: "󰍹"
+          tooltipText: root.t("console")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: { root.svc.openConsole(card.vm.name); root.close() }
+        }
+        PanelActionButton {
+          visible: card.paused
+          iconText: "󰐊"
+          tooltipText: root.t("resume")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          enabled: !card.busy
+          onClicked: root.svc.resume(card.vm.name)
+        }
+        PanelActionButton {
+          // Graceful shutdown; while it is in progress, offer force-off instead.
+          visible: card.vm.pending !== "starting"
+          iconText: card.vm.pending === "stopping" ? "󰅙" : "󰐥"
+          tooltipText: card.vm.pending === "stopping" ? root.t("force") : root.t("shutdown")
+          foreground: root.foreground
+          hoverColor: root.urgent
+          fontFamily: root.fontFamily
+          onClicked: card.vm.pending === "stopping"
+            ? root.svc.forceStop(card.vm.name)
+            : root.svc.stop(card.vm.name)
+        }
+      }
+
+      // IP chip
+      Rectangle {
+        visible: card.running
+        height: ipRow.implicitHeight + Style.space(8)
+        width: ipRow.implicitWidth + Style.space(16)
+        radius: Style.cornerRadius > 0 ? height / 2 : 0
+        color: ipMouse.containsMouse
+          ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+        Behavior on color { ColorAnimation { duration: 120 } }
+
+        Row {
+          id: ipRow
+          anchors.centerIn: parent
+          spacing: Style.space(6)
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: card.ipCopied ? "󰄬" : "󰩟"
+            textFormat: Text.PlainText
+            color: card.ipCopied ? root.accent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: card.ipCopied ? root.t("copied") : (card.vm.ip !== "" ? card.vm.ip : root.t("waitingIp"))
+            textFormat: Text.PlainText
+            color: card.vm.ip !== "" ? root.foreground : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+        MouseArea {
+          id: ipMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          enabled: card.vm.ip !== ""
+          cursorShape: Qt.PointingHandCursor
+          onClicked: { root.svc.copy(card.vm.ip); card.ipCopied = true; copiedTimer.restart() }
+        }
+        PanelToolTip {
+          visible: ipMouse.containsMouse && !card.ipCopied
+          text: root.t("copyIp")
+          fontFamily: root.fontFamily
+        }
+      }
+
+      // Metrics
+      Column {
+        visible: card.running
+        width: parent.width
+        spacing: Style.space(8)
+
+        Meter {
+          icon: "󰻠"
+          label: root.t("cpu")
+          known: card.vm.cpu >= 0
+          frac: card.vm.cpu / 100
+          value: Math.round(card.vm.cpu) + "%"
+        }
+        Meter {
+          icon: "󰍛"
+          label: root.t("ram")
+          known: card.vm.ramTotal > 0
+          frac: card.vm.ramTotal > 0 ? card.vm.ramUsed / card.vm.ramTotal : 0
+          extraFrac: card.vm.ramTotal > 0 ? card.vm.ramCache / card.vm.ramTotal : 0
+          value: root.fmtMem(card.vm.ramUsed)
+            + (card.vm.ramCache > 0 ? " + " + root.fmtMem(card.vm.ramCache) + " " + root.t("cache") : "")
+            + " / " + root.fmtMem(card.vm.ramTotal)
+        }
+        Meter {
+          icon: "󰋊"
+          label: root.t("disk")
+          known: card.vm.diskTotal > 0
+          frac: card.vm.diskTotal > 0 ? card.vm.diskUsed / card.vm.diskTotal : 0
+          value: root.fmtGb(card.vm.diskUsed) + " / " + root.fmtGb(card.vm.diskTotal) + " GB"
+        }
+      }
+    }
+  }
+
+  // Compact row for stopped VMs.
+  component StoppedRow: CursorSurface {
+    id: row
+    property var vm
+    readonly property bool crashed: vm.state === "crashed"
+    readonly property string errorText: root.svc.errors[vm.name] ? root.svc.errors[vm.name].message : ""
+    foreground: root.foreground
+    hasCursor: rowMouse.containsMouse
+    implicitHeight: Style.space(40)
+
+    MouseArea {
+      id: rowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.svc.start(row.vm.name)
+    }
+
+    PanelToolTip {
+      visible: rowMouse.containsMouse && row.errorText !== ""
+      text: row.errorText
+      fontFamily: root.fontFamily
+    }
+
+    RowLayout {
+      anchors.fill: parent
+      anchors.leftMargin: Style.space(12)
+      anchors.rightMargin: Style.space(6)
+      spacing: Style.space(10)
+
+      StatusDot {
+        Layout.alignment: Qt.AlignVCenter
+        color: row.crashed ? root.urgent : root.dim
+        live: false
+        hollow: true
+      }
+      Text {
+        Layout.fillWidth: true
+        text: row.vm.name
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: rowMouse.containsMouse ? root.foreground : Qt.darker(root.foreground, 1.2)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+      Text {
+        visible: !rowMouse.containsMouse
+        Layout.maximumWidth: row.width * 0.5
+        elide: Text.ElideRight
+        text: row.errorText !== "" ? "󰀦 " + root.t("failed")
+          : row.crashed ? root.t("stCrashed") : root.t("stOff")
+        textFormat: Text.PlainText
+        color: row.crashed || row.errorText !== "" ? root.urgent : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+      Row {
+        visible: rowMouse.containsMouse
+        spacing: Style.space(6)
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.t("start")
+          textFormat: Text.PlainText
+          color: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: "󰐊"
+          textFormat: Text.PlainText
+          color: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
         }
       }
     }

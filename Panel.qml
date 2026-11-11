@@ -100,11 +100,20 @@ Panel {
   // Inline components below can't see document ids; they go through root.svc.
   readonly property alias svc: service
 
+  // IPC takes a VM name for convenience; resolve it to the UUID from the last
+  // poll (exact match) so the action targets exactly that domain.
+  function _ipcAct(name, fn) {
+    var uuid = service.uuidForName(name)
+    if (!uuid) return "unknown vm"
+    fn(uuid)
+    return "ok"
+  }
+
   IpcHandler {
     target: root.ipcTarget
     function refresh(): string { service.refresh(); return "ok" }
-    function start(name: string): string { service.start(name); return "ok" }
-    function shutdown(name: string): string { service.stop(name); return "ok" }
+    function start(name: string): string { return root._ipcAct(name, service.start) }
+    function shutdown(name: string): string { return root._ipcAct(name, service.stop) }
   }
 
   // ------------------------------------------------------------------ bar
@@ -443,7 +452,7 @@ Panel {
           tooltipText: root.t("console")
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: { root.svc.openConsole(card.vm.name); root.close() }
+          onClicked: { root.svc.openConsole(card.vm.uuid); root.close() }
         }
         PanelActionButton {
           visible: card.paused
@@ -452,7 +461,7 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           enabled: !card.busy
-          onClicked: root.svc.resume(card.vm.name)
+          onClicked: root.svc.resume(card.vm.uuid)
         }
         PanelActionButton {
           // Graceful shutdown; while it is in progress, offer force-off instead.
@@ -463,8 +472,8 @@ Panel {
           hoverColor: root.urgent
           fontFamily: root.fontFamily
           onClicked: card.vm.pending === "stopping"
-            ? root.svc.forceStop(card.vm.name)
-            : root.svc.stop(card.vm.name)
+            ? root.svc.forceStop(card.vm.uuid)
+            : root.svc.stop(card.vm.uuid)
         }
       }
 
@@ -554,7 +563,7 @@ Panel {
     id: row
     property var vm
     readonly property bool crashed: vm.state === "crashed"
-    readonly property string errorText: root.svc.errors[vm.name] ? root.svc.errors[vm.name].message : ""
+    readonly property string errorText: root.svc.errors[vm.uuid] ? root.svc.errors[vm.uuid].message : ""
     foreground: root.foreground
     hasCursor: rowMouse.containsMouse
     implicitHeight: Style.space(40)
@@ -564,7 +573,7 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.svc.start(row.vm.name)
+      onClicked: root.svc.start(row.vm.uuid)
     }
 
     PanelToolTip {

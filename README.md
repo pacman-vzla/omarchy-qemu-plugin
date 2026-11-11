@@ -25,10 +25,46 @@ QEMU/libvirt VM manager widget for Omarchy. Monitor and control your virtual mac
 
 ### Requirements
 
-- QEMU/libvirt installed and running
-- User in the `libvirt` group: `sudo usermod -aG libvirt $USER`
-- `virt-manager` for console access
-- `wl-clipboard` for copying IPs
+Omarchy does not ship QEMU or libvirt, and installing this plugin does not set them up. The plugin talks to libvirt (`qemu:///system`), so the host needs the libvirt service running and your user allowed to use it. If you already manage VMs with virt-manager without sudo, skip to [Installation](#installation).
+
+One-time host setup (Arch / Omarchy), step by step:
+
+1. Install QEMU, libvirt, virt-manager and the packages libvirt needs for VM networking and UEFI guests:
+
+   ```bash
+   sudo pacman -S --needed qemu-desktop libvirt virt-manager dnsmasq edk2-ovmf
+   ```
+
+2. Enable and start the libvirt service:
+
+   ```bash
+   sudo systemctl enable --now libvirtd.service
+   ```
+
+3. Allow your user to manage system VMs without sudo by adding it to the `libvirt` group:
+
+   ```bash
+   sudo usermod -aG libvirt $USER
+   ```
+
+   Log out and back in (or reboot) so the new group takes effect.
+
+4. Start the default NAT network and make it start on boot:
+
+   ```bash
+   sudo virsh net-start default
+   sudo virsh net-autostart default
+   ```
+
+   `net-start` reports an error if the network is already active; that is fine.
+
+5. Check that it works **without** sudo. This must list your VMs (or an empty table), not a permission error:
+
+   ```bash
+   virsh -c qemu:///system list --all
+   ```
+
+`wl-clipboard` (for copying IPs) is already part of Omarchy.
 
 ### Installation
 
@@ -61,7 +97,7 @@ The change applies instantly, no shell restart needed. The choice is stored in `
 
 ### Sudo
 
-Not required: uses `qemu:///system` via libvirt directly.
+Only the one-time host setup above uses sudo. The plugin itself never does: it uses `qemu:///system` through your `libvirt` group membership.
 
 ### Removal
 
@@ -93,10 +129,46 @@ Widget de Omarchy para administrar máquinas virtuales de QEMU/libvirt. Monitore
 
 ### Requisitos
 
-- QEMU/libvirt instalados y en ejecución
-- Usuario en el grupo `libvirt`: `sudo usermod -aG libvirt $USER`
-- `virt-manager` para abrir la consola
-- `wl-clipboard` para copiar IPs
+Omarchy no trae QEMU ni libvirt, y instalar este plugin no los configura. El plugin se comunica con libvirt (`qemu:///system`), así que el equipo necesita el servicio de libvirt en ejecución y tu usuario con permiso para usarlo. Si ya administras VMs con virt-manager sin sudo, pasa directo a [Instalación](#instalación).
+
+Configuración del equipo (una sola vez, Arch / Omarchy), paso a paso:
+
+1. Instala QEMU, libvirt, virt-manager y los paquetes que libvirt necesita para la red de las VMs y para VMs UEFI:
+
+   ```bash
+   sudo pacman -S --needed qemu-desktop libvirt virt-manager dnsmasq edk2-ovmf
+   ```
+
+2. Habilita e inicia el servicio de libvirt:
+
+   ```bash
+   sudo systemctl enable --now libvirtd.service
+   ```
+
+3. Agrega tu usuario al grupo `libvirt` para administrar las VMs del sistema sin sudo:
+
+   ```bash
+   sudo usermod -aG libvirt $USER
+   ```
+
+   Cierra sesión y vuelve a entrar (o reinicia) para que el grupo nuevo tenga efecto.
+
+4. Inicia la red NAT por defecto y haz que arranque con el sistema:
+
+   ```bash
+   sudo virsh net-start default
+   sudo virsh net-autostart default
+   ```
+
+   Si la red ya estaba activa, `net-start` muestra un error; no pasa nada.
+
+5. Comprueba que funciona **sin** sudo. Debe listar tus VMs (o una tabla vacía), no un error de permisos:
+
+   ```bash
+   virsh -c qemu:///system list --all
+   ```
+
+`wl-clipboard` (para copiar IPs) ya viene con Omarchy.
 
 ### Instalación
 
@@ -129,7 +201,7 @@ El cambio se aplica al instante, sin reiniciar el shell. La elección se guarda 
 
 ### Sudo
 
-No hace falta: usa `qemu:///system` directamente a través de libvirt.
+Solo la configuración inicial del equipo usa sudo. El plugin nunca lo usa: accede a `qemu:///system` gracias a que tu usuario está en el grupo `libvirt`.
 
 ### Desinstalación
 

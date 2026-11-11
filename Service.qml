@@ -5,7 +5,10 @@ import Quickshell.Io
 Item {
   id: root
 
-  // [{ name, state, ip, ramUsed, ramTotal, ramCache (MiB), diskUsed, diskTotal (GiB),
+  // VMs are keyed by libvirt UUID everywhere; `name` is display-only and is
+  // never handed to virsh/virt-manager, where it could be parsed as an option
+  // ("--domain=other") or resolve to a different domain by ID ("7").
+  // [{ uuid, name, state, ip, ramUsed, ramTotal, ramCache (MiB), diskUsed, diskTotal (GiB),
   //    cpu (0-100, or -1 until two samples exist), vcpus,
   //    pending ("" | "starting" | "stopping" | "resuming") }]
   property var vms: []
@@ -17,6 +20,20 @@ Item {
   readonly property string script: Quickshell.env("HOME") +
     "/.config/omarchy/plugins/dix.qemu/scripts/vm-status"
   readonly property string uri: "qemu:///system"
+  readonly property var uuidRe: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+  function isUuid(u) { return typeof u === "string" && uuidRe.test(u) }
+
+  function vmByUuid(uuid) {
+    for (var i = 0; i < vms.length; i++) if (vms[i].uuid === uuid) return vms[i]
+    return null
+  }
+
+  // For the IPC interface, which takes names: exact match only.
+  function uuidForName(name) {
+    for (var i = 0; i < vms.length; i++) if (vms[i].name === name) return vms[i].uuid
+    return ""
+  }
 
   function isActive(v) {
     return (v.state !== "shut_off" && v.state !== "crashed") || v.pending === "starting"
@@ -32,9 +49,9 @@ Item {
     return t
   }
 
-  // name -> { action, since }
+  // uuid -> { action, since }
   property var _pending: ({})
-  // name -> { cpu: ns, at: ms }
+  // uuid -> { cpu: ns, at: ms }
   property var _cpuPrev: ({})
   property var _cpuPct: ({})
   property var _lastRaw: []
@@ -43,15 +60,15 @@ Item {
     if (!statusProcess.running) statusProcess.running = true
   }
 
-  function _setPending(name, action) {
+  function _setPending(uuid, action) {
     var p = Object.assign({}, _pending)
-    if (action) p[name] = { action: action, since: Date.now() }
-    else delete p[name]
+    if (action) p[uuid] = { action: action, since: Date.now() }
+    else delete p[uuid]
     _pending = p
     _rebuild(_lastRaw)
   }
 
-  // name -> { message, at } for the last failed action; cleared after a while.
+  // uuid -> { message, at } for the last failed action; cleared after a while.
   property var errors: ({})
 
   // Runs a virsh action and reports failures instead of leaving the VM stuck
@@ -61,60 +78,73 @@ Item {
     id: actionComponent
     Process {
       id: proc
+      property string vmUuid: ""
       property string vmName: ""
       property bool openConsoleOnSuccess: false
       stdout: StdioCollector {
         waitForEnd: true
         onStreamFinished: {
-          root._actionDone(proc.vmName, text, proc.openConsoleOnSuccess)
+          root._actionDone(proc.vmUuid, proc.vmName, text, proc.openConsoleOnSuccess)
           proc.destroy()
         }
       }
     }
   }
 
-  function _run(name, args, openConsoleOnSuccess) {
-    _clearError(name)
+  // Runs `virsh <action> --domain=<uuid>`. The UUID is validated and passed as
+  // the explicit option value, so lookup can only match that exact domain.
+  function _run(uuid, action, openConsoleOnSuccess) {
+    if (!isUuid(uuid)) return
+    _clearError(uuid)
+    var vm = vmByUuid(uuid)
+    var args = [action, "--domain=" + uuid]
     var p = actionComponent.createObject(root, {
-      vmName: name,
+      vmUuid: uuid,
+      vmName: vm ? vm.name : uuid,
       openConsoleOnSuccess: !!openConsoleOnSuccess,
       command: ["sh", "-c", '"$@" 2>&1; echo "__rc=$?"', "sh", "virsh", "-c", uri].concat(args)
     })
     p.running = true
   }
 
-  function _actionDone(name, output, openConsoleOnSuccess) {
+  function _actionDone(uuid, name, output, openConsoleOnSuccess) {
     var lines = String(output || "").split("\n").map(function(l) { return l.trim() })
       .filter(function(l) { return l !== "" })
     var rcLine = lines.filter(function(l) { return l.indexOf("__rc=") === 0 }).pop() || "__rc=1"
     var rc = parseInt(rcLine.substring(5))
     if (rc === 0) {
-      if (openConsoleOnSuccess) openConsole(name)
+      if (openConsoleOnSuccess) openConsole(uuid)
     } else {
       // virsh prints a generic "error: Failed to ..." line followed by the cause.
       var errs = lines.filter(function(l) { return l.indexOf("__rc=") !== 0 })
         .map(function(l) { return l.replace(/^error:\s*/i, "") })
       var msg = errs.length > 0 ? errs[errs.length - 1] : "virsh exited with " + rc
-      _setPending(name, "")
+      _setPending(uuid, "")
       var e = Object.assign({}, errors)
-      e[name] = { message: msg, at: Date.now() }
+      e[uuid] = { message: msg, at: Date.now() }
       errors = e
       Quickshell.execDetached(["notify-send", "-a", "QEMU", "-u", "critical", name, msg])
     }
     refresh()
   }
 
-  function _clearError(name) {
-    if (!errors[name]) return
+  function _clearError(uuid) {
+    if (!errors[uuid]) return
     var e = Object.assign({}, errors)
-    delete e[name]
+    delete e[uuid]
     errors = e
   }
 
-  function start(name)     { _setPending(name, "starting"); _run(name, ["start", name], true) }
-  function stop(name)      { _setPending(name, "stopping"); _run(name, ["shutdown", name]) }
-  function forceStop(name) { _setPending(name, "stopping"); _run(name, ["destroy", name]) }
-  function resume(name)    { _setPending(name, "resuming"); _run(name, ["resume", name]) }
+  function _act(uuid, pending, action, openConsoleOnSuccess) {
+    if (!isUuid(uuid)) return
+    _setPending(uuid, pending)
+    _run(uuid, action, openConsoleOnSuccess)
+  }
+
+  function start(uuid)     { _act(uuid, "starting", "start", true) }
+  function stop(uuid)      { _act(uuid, "stopping", "shutdown") }
+  function forceStop(uuid) { _act(uuid, "stopping", "destroy") }
+  function resume(uuid)    { _act(uuid, "resuming", "resume") }
 
   Timer {
     // Drop error hints after 20 s.
@@ -131,8 +161,13 @@ Item {
     }
   }
 
-  function openConsole(name) {
-    Quickshell.execDetached(["virt-manager", "--connect", uri, "--show-domain-console", name])
+  // virt-manager matches its argument against each VM's ID, name and UUID, so
+  // refuse if some other VM is literally named like this UUID.
+  function openConsole(uuid) {
+    if (!isUuid(uuid)) return
+    for (var i = 0; i < vms.length; i++)
+      if (vms[i].name === uuid && vms[i].uuid !== uuid) return
+    Quickshell.execDetached(["virt-manager", "--connect", uri, "--show-domain-console=" + uuid])
   }
 
   function openManager() {
@@ -143,15 +178,15 @@ Item {
     Quickshell.execDetached(["wl-copy", text])
   }
 
-  // name -> last seen state, to detect VMs that just shut down.
+  // uuid -> last seen state, to detect VMs that just shut down.
   property var _lastStates: ({})
 
   function _closeConsolesForStopped(raw) {
     var next = {}, stopped = []
     for (var i = 0; i < raw.length; i++) {
       var v = raw[i]
-      next[v.name] = v.state
-      var before = _lastStates[v.name]
+      next[v.uuid] = v.state
+      var before = _lastStates[v.uuid]
       var isOff = v.state === "shut_off" || v.state === "crashed"
       if (before !== undefined && before !== "shut_off" && before !== "crashed" && isOff)
         stopped.push(v.name)
@@ -209,16 +244,16 @@ Item {
     var out = []
     for (var i = 0; i < raw.length; i++) {
       var v = Object.assign({}, raw[i])
-      var p = pending[v.name]
+      var p = pending[v.uuid]
       if (p) {
         var done = (p.action === "stopping")
           ? (v.state === "shut_off" || v.state === "crashed")
           : v.state === "running"
         // Graceful shutdown can take a while; drop the hint after 3 minutes.
-        if (done || now - p.since > 180000) { delete pending[v.name]; changed = true; p = null }
+        if (done || now - p.since > 180000) { delete pending[v.uuid]; changed = true; p = null }
       }
       v.pending = p ? p.action : ""
-      var c = _cpuPct[v.name]
+      var c = _cpuPct[v.uuid]
       v.cpu = (v.state === "running" && c !== undefined) ? c : -1
       out.push(v)
     }
@@ -241,8 +276,9 @@ Item {
           var f = lines[i].split("\t")
           var key = f[0]
           if (key === "error") { err = true; continue }
-          if (key === "vm" && f.length >= 3) {
-            map[f[1]] = { name: f[1], state: f[2], ip: "", ramUsed: 0, ramTotal: 0, ramCache: 0,
+          if (key === "vm" && f.length >= 4) {
+            if (!root.isUuid(f[1])) continue
+            map[f[1]] = { uuid: f[1], name: f[2], state: f[3], ip: "", ramUsed: 0, ramTotal: 0, ramCache: 0,
                           diskUsed: 0, diskTotal: 0, vcpus: 0 }
             order.push(f[1])
             continue
@@ -260,10 +296,10 @@ Item {
           } else if (key === "vm_cpu" && f.length >= 4) {
             var t = parseFloat(f[2]), n = Math.max(1, parseInt(f[3]))
             vm.vcpus = n
-            nextPrev[vm.name] = { cpu: t, at: now }
-            var p = prev[vm.name]
+            nextPrev[vm.uuid] = { cpu: t, at: now }
+            var p = prev[vm.uuid]
             if (p && now > p.at && t >= p.cpu)
-              pct[vm.name] = Math.max(0, Math.min(100, (t - p.cpu) / ((now - p.at) * 1e6) / n * 100))
+              pct[vm.uuid] = Math.max(0, Math.min(100, (t - p.cpu) / ((now - p.at) * 1e6) / n * 100))
           } else if (key === "vm_ip" && f.length >= 3) {
             vm.ip = f[2]
           }

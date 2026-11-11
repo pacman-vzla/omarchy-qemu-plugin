@@ -1,0 +1,110 @@
+#!/bin/bash
+# Regression test: VM display names must never redirect lookups or lifecycle
+# actions to another domain. Runs vm-status and the virsh argv Service.qml
+# builds against a fake virsh that mimics real lookup rules:
+#   - "--domain=X" / "--domain X" set the domain option (vsh option parsing)
+#   - a domain string is tried as ID, then UUID, then name (virsh-util.c)
+# Domains:
+#   A  name "--domain=Victim"  shut off
+#   B  name "Victim"           running
+#   C  name "7"                shut off
+#   D  name "other"            running, ID 7
+set -u
+DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+LOG="$TMP/log"; : > "$LOG"
+
+A=aaaaaaaa-0000-4000-8000-000000000001
+B=bbbbbbbb-0000-4000-8000-000000000002
+C=cccccccc-0000-4000-8000-000000000003
+D=dddddddd-0000-4000-8000-000000000004
+
+mkdir "$TMP/bin"
+cat > "$TMP/bin/virsh" <<EOF
+#!/bin/bash
+# uuid|id|name|state
+DOMS=(
+  "$A|-|--domain=Victim|shut off"
+  "$B|1|Victim|running"
+  "$C|-|7|shut off"
+  "$D|7|other|running"
+)
+LOG="$LOG"
+EOF
+cat >> "$TMP/bin/virsh" <<'EOF'
+[[ $1 == -c ]] && shift 2
+cmd=$1; shift
+dom=""; rest=()
+while (( $# )); do
+  case $1 in
+    --domain=*) dom=${1#--domain=} ;;
+    --domain) dom=$2; shift ;;
+    --*) rest+=("$1") ;;
+    *) [[ -z $dom ]] && dom=$1 || rest+=("$1") ;;
+  esac
+  shift
+done
+lookup() {
+  local d u i n s
+  for d in "${DOMS[@]}"; do IFS='|' read -r u i n s <<< "$d"; [[ $i == "$1" ]] && { echo "$d"; return; }; done
+  for d in "${DOMS[@]}"; do IFS='|' read -r u i n s <<< "$d"; [[ $u == "$1" ]] && { echo "$d"; return; }; done
+  for d in "${DOMS[@]}"; do IFS='|' read -r u i n s <<< "$d"; [[ $n == "$1" ]] && { echo "$d"; return; }; done
+}
+case $cmd in
+  list)
+    for d in "${DOMS[@]}"; do
+      IFS='|' read -r u i n s <<< "$d"
+      [[ " ${rest[*]} " == *" --state-running "* && $s != running ]] && continue
+      [[ " ${rest[*]} " == *" --uuid "* ]] && echo "$u" || echo "$n"
+    done
+    exit 0 ;;
+esac
+[[ -z $dom ]] && exit 0   # domstats over all domains: not used by vm-status
+hit=$(lookup "$dom") || true
+[[ -z $hit ]] && { echo "error: no domain '$dom'" >&2; exit 1; }
+IFS='|' read -r u i n s <<< "$hit"
+echo "$cmd $u" >> "$LOG"
+case $cmd in
+  domname) echo "$n" ;;
+  domstate) echo "$s" ;;
+  domstats) echo "Domain: '$n'"; echo "  cpu.time=1000"; echo "  vcpu.current=1" ;;
+esac
+exit 0
+EOF
+chmod +x "$TMP/bin/virsh"
+export PATH="$TMP/bin:$PATH"
+
+fail=0
+check() { if eval "$2"; then echo "✓ $1"; else echo "✗ $1"; fail=1; fi; }
+
+# Sanity: the fake reproduces the reported bug with name-based argv.
+virsh -c qemu:///system shutdown "--domain=Victim"; virsh -c qemu:///system destroy 7
+expected=$(printf 'shutdown %s\ndestroy %s' "$B" "$D")
+check "fake virsh reproduces the name-based redirect" '[[ $(cat "$LOG") == "$expected" ]]'
+: > "$LOG"
+
+# 1. Polling: every record is keyed by its own UUID with its own state.
+out=$("$DIR/scripts/vm-status")
+check "A row shows its own name and state" \
+  'grep -qxF "$(printf "vm\t%s\t--domain=Victim\tshut_off" "$A")" <<< "$out"'
+check "C row (name \"7\") is not reported as running" \
+  'grep -qxF "$(printf "vm\t%s\t7\tshut_off" "$C")" <<< "$out"'
+check "polling only queried each domain by its own UUID" \
+  '! grep -qvE "^(domname|domstate|domstats|dommemstat|domifaddr) ($A|$B|$C|$D)$" "$LOG"'
+check "stats only for running domains B and D" \
+  '[[ $(grep -c "^vm_cpu" <<< "$out") == 2 ]] && ! grep -qE "^vm_cpu[[:space:]]($A|$C)" <<< "$out"'
+
+# 2. Actions: Service.qml must pass the UUID as the explicit --domain value.
+check "Service.qml builds [action, \"--domain=\" + uuid]" \
+  'grep -qF "var args = [action, \"--domain=\" + uuid]" "$DIR/Service.qml"'
+check "Service.qml opens consoles by UUID" \
+  'grep -qF "\"--show-domain-console=\" + uuid" "$DIR/Service.qml"'
+for target in "$A" "$C"; do
+  for action in start shutdown destroy resume; do
+    : > "$LOG"
+    virsh -c qemu:///system "$action" "--domain=$target" >/dev/null 2>&1
+    check "$action on $target affects only $target" '[[ $(cat "$LOG") == "$action $target" ]]'
+  done
+done
+
+exit $fail

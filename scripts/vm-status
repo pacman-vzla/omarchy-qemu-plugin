@@ -1,87 +1,87 @@
 #!/bin/bash
-# Emits tab-separated records consumed by Service.qml:
-#   vm      <name> <state>
-#   vm_ram  <name> <used_kib> <max_kib> [<reclaimable_cache_kib>]
-#   vm_cpu  <name> <cpu_time_ns> <vcpus>
-#   vm_disk <name> <alloc_bytes> <capacity_bytes>
-#   vm_ip   <name> <ipv4>
+# Emits tab-separated records consumed by Service.qml. Every VM is keyed by its
+# libvirt UUID; the name is display-only and never passed back to virsh, so a
+# domain named "--domain=other" or "7" cannot redirect lookups to another VM.
+#   vm      <uuid> <name> <state>
+#   vm_ram  <uuid> <used_kib> <max_kib> [<reclaimable_cache_kib>]
+#   vm_cpu  <uuid> <cpu_time_ns> <vcpus>
+#   vm_disk <uuid> <alloc_bytes> <capacity_bytes>
+#   vm_ip   <uuid> <ipv4>
 #   error   <message>
 
 # virsh output is localized (e.g. "ejecutando" instead of "running"); force C locale
 export LC_ALL=C
 V=(virsh -c qemu:///system)
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
-if ! names=$("${V[@]}" list --all --name 2>/dev/null); then
+if ! uuids=$("${V[@]}" list --all --uuid 2>/dev/null); then
   printf 'error\tlibvirt\n'
   exit 0
 fi
 
-while IFS= read -r name; do
-  [[ -z "$name" ]] && continue
-  state=$("${V[@]}" domstate "$name" 2>/dev/null | head -1)
+while IFS= read -r uuid; do
+  [[ $uuid =~ $UUID_RE ]] || continue
+  name=$("${V[@]}" domname --domain="$uuid" 2>/dev/null | head -1)
+  # Keep the record format intact whatever characters the name contains.
+  name=${name//[$'\t\r\n']/ }
+  state=$("${V[@]}" domstate --domain="$uuid" 2>/dev/null | head -1)
   state=${state// /_}
-  printf 'vm\t%s\t%s\n' "$name" "${state:-unknown}"
-done <<< "$names"
+  printf 'vm\t%s\t%s\t%s\n' "$uuid" "${name:-$uuid}" "${state:-unknown}"
+done <<< "$uuids"
 
-# One domstats call covers RAM, CPU and disk for every running VM.
-stats=$("${V[@]}" domstats --list-running --balloon --cpu-total --vcpu --block 2>/dev/null)
 now=$(date +%s)
+"${V[@]}" list --state-running --uuid 2>/dev/null | while IFS= read -r uuid; do
+  [[ $uuid =~ $UUID_RE ]] || continue
+  stats=$("${V[@]}" domstats --balloon --cpu-total --vcpu --block --domain="$uuid" 2>/dev/null)
 
-# Guest memory stats only refresh when a collection period is set (libvirt
-# defaults to 0, so they freeze at boot). Enable it for VMs whose stats are stale.
-awk -v now="$now" '
-  /^Domain: / { dom = $0; sub(/^Domain: '\''/, "", dom); sub(/'\''$/, "", dom) }
-  /balloon\.last-update=/ { split($0, a, "="); if (now - a[2] > 30) print dom }
-' <<< "$stats" | while IFS= read -r name; do
-  "${V[@]}" dommemstat "$name" --period 5 --live >/dev/null 2>&1
+  # Guest memory stats only refresh when a collection period is set (libvirt
+  # defaults to 0, so they freeze at boot). Enable it when they are stale.
+  updated=$(sed -n 's/^[[:space:]]*balloon\.last-update=//p' <<< "$stats")
+  if [[ $updated =~ ^[0-9]+$ ]] && (( now - updated > 30 )); then
+    "${V[@]}" dommemstat --domain="$uuid" --period 5 --live >/dev/null 2>&1
+  fi
+
+  awk -v now="$now" -v dom="$uuid" '
+    function flush() {
+      # Prefer fresh guest-reported usage (virtio balloon driver); otherwise host RSS.
+      if (avail != "" && usable != "" && updated != "" && now - updated <= 30)
+        printf "vm_ram\t%s\t%d\t%s\t%d\n", dom, avail - usable, maxmem, (unused != "" ? usable - unused : 0)
+      else if (rss != "") printf "vm_ram\t%s\t%s\t%s\n", dom, rss, maxmem
+      if (cpu != "") printf "vm_cpu\t%s\t%s\t%s\n", dom, cpu, vcpus
+      alloc = 0; cap = 0
+      for (i in bcap) if (!(i in iso)) { alloc += balloc[i]; cap += bcap[i] }
+      if (cap > 0) printf "vm_disk\t%s\t%d\t%d\n", dom, alloc, cap
+    }
+    BEGIN { vcpus = 1 }
+    /^Domain: / { next }
+    {
+      line = $0; sub(/^[ \t]+/, "", line)
+      k = substr(line, 1, index(line, "=") - 1); v = substr(line, index(line, "=") + 1)
+      if (k == "balloon.rss") rss = v
+      else if (k == "balloon.maximum") maxmem = v
+      else if (k == "balloon.available") avail = v
+      else if (k == "balloon.usable") usable = v
+      else if (k == "balloon.unused") unused = v
+      else if (k == "balloon.last-update") updated = v
+      else if (k == "cpu.time") cpu = v
+      else if (k == "vcpu.current") vcpus = v
+      else if (k ~ /^block\.[0-9]+\.capacity$/) { split(k, p, "."); bcap[p[2]] = v }
+      else if (k ~ /^block\.[0-9]+\.allocation$/) { split(k, p, "."); balloc[p[2]] = v }
+      else if (k ~ /^block\.[0-9]+\.path$/ && tolower(v) ~ /\.iso$/) { split(k, p, "."); iso[p[2]] = 1 }
+    }
+    END { flush() }
+  ' <<< "$stats"
 done
 
-awk -v now="$now" '
-  function flush() {
-    if (dom == "") return
-    # Prefer fresh guest-reported usage (virtio balloon driver); otherwise host RSS.
-    if (avail != "" && usable != "" && updated != "" && now - updated <= 30)
-      printf "vm_ram\t%s\t%d\t%s\t%d\n", dom, avail - usable, maxmem, (unused != "" ? usable - unused : 0)
-    else if (rss != "") printf "vm_ram\t%s\t%s\t%s\n", dom, rss, maxmem
-    if (cpu != "") printf "vm_cpu\t%s\t%s\t%s\n", dom, cpu, vcpus
-    alloc = 0; cap = 0
-    for (i in bcap) if (!(i in iso)) { alloc += balloc[i]; cap += bcap[i] }
-    if (cap > 0) printf "vm_disk\t%s\t%d\t%d\n", dom, alloc, cap
-  }
-  /^Domain: / {
-    flush()
-    dom = $0; sub(/^Domain: '\''/, "", dom); sub(/'\''$/, "", dom)
-    rss = ""; maxmem = ""; avail = ""; usable = ""; unused = ""; updated = ""; cpu = ""; vcpus = 1
-    delete bcap; delete balloc; delete iso
-    next
-  }
-  {
-    line = $0; sub(/^[ \t]+/, "", line)
-    k = substr(line, 1, index(line, "=") - 1); v = substr(line, index(line, "=") + 1)
-    if (k == "balloon.rss") rss = v
-    else if (k == "balloon.maximum") maxmem = v
-    else if (k == "balloon.available") avail = v
-    else if (k == "balloon.usable") usable = v
-    else if (k == "balloon.unused") unused = v
-    else if (k == "balloon.last-update") updated = v
-    else if (k == "cpu.time") cpu = v
-    else if (k == "vcpu.current") vcpus = v
-    else if (k ~ /^block\.[0-9]+\.capacity$/) { split(k, p, "."); bcap[p[2]] = v }
-    else if (k ~ /^block\.[0-9]+\.allocation$/) { split(k, p, "."); balloc[p[2]] = v }
-    else if (k ~ /^block\.[0-9]+\.path$/ && tolower(v) ~ /\.iso$/) { split(k, p, "."); iso[p[2]] = 1 }
-  }
-  END { flush() }
-' <<< "$stats"
-
 # IPs: DHCP leases first, then the ARP table as a fallback.
-"${V[@]}" list --state-running --name 2>/dev/null | while IFS= read -r name; do
-  [[ -z "$name" ]] && continue
+"${V[@]}" list --state-running --uuid 2>/dev/null | while IFS= read -r uuid; do
+  [[ $uuid =~ $UUID_RE ]] || continue
   ip=""
   for src in lease arp; do
-    ip=$("${V[@]}" domifaddr "$name" --source "$src" 2>/dev/null \
+    ip=$("${V[@]}" domifaddr --domain="$uuid" --source "$src" 2>/dev/null \
       | awk '$3 == "ipv4" { split($4, a, "/"); print a[1]; exit }')
     [[ -n "$ip" ]] && break
   done
-  [[ -n "$ip" ]] && printf 'vm_ip\t%s\t%s\n' "$name" "$ip"
+  [[ -n "$ip" ]] && printf 'vm_ip\t%s\t%s\n' "$uuid" "$ip"
 done
 exit 0

@@ -11,7 +11,7 @@
   "loading": "Nalaganje…",
   "stRunning": "Teče",
   "stOff": "Ustavljen",
-  "stPaused": "Zaustavljen",
+  "stPaused": "Začasno ustavljen",
   "stCrashed": "Zrušen",
   "starting": "Zaganjanje…",
   "stopping": "Zaustavljanje…",

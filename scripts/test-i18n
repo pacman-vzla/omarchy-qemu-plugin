@@ -46,4 +46,9 @@ if grep -rqE 'set-language|dix\.qemu/lang' "$DIR/Panel.qml" "$DIR/README.md" "$D
   bad "references to set-language / dix.qemu/lang remain"
 else echo "✓ no plugin-level language switch left"; fi
 
+# IpcHandler lives in Quickshell.Io; qs.Commons/qs.Ui imports do not re-export it.
+if grep -q 'IpcHandler' "$DIR/Panel.qml" && ! grep -q '^import Quickshell\.Io' "$DIR/Panel.qml"; then
+  bad "Panel.qml uses IpcHandler without import Quickshell.Io"
+else echo "✓ Panel.qml imports what it uses"; fi
+
 exit $fail

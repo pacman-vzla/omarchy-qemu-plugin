@@ -1,0 +1,15 @@
+#!/bin/bash
+# Set whether running VM cards you haven't toggled start expanded or collapsed. Applies live.
+STATE="$HOME/.local/state/dix.qemu"
+
+case "$1" in
+  expanded|collapsed)
+    mkdir -p "$STATE"
+    printf '%s\n' "$1" > "$STATE/card-default"
+    echo "Card default set to $1"
+    ;;
+  *)
+    echo "Usage: set-card-default [expanded|collapsed]"
+    exit 1
+    ;;
+esac

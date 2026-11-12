@@ -14,7 +14,8 @@ Panel {
   // Language: "es" (default) or "en". Stored outside the plugin folder so it
   // survives plugin updates; scripts/set-language writes it and the panel
   // picks it up live.
-  readonly property string langFile: Quickshell.env("HOME") + "/.local/state/dix.qemu/lang"
+  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/dix.qemu"
+  readonly property string langFile: stateDir + "/lang"
   property string lang: "es"
 
   FileView {
@@ -26,18 +27,65 @@ Panel {
       var v = String(text() || "").trim()
       root.lang = (v === "en" || v === "es") ? v : "es"
     }
-    // A missing file can't be watched: create it with the default, then reload.
-    onLoadFailed: {
-      root.lang = "es"
-      if (!createLang.running) createLang.running = true
-    }
+    onLoadFailed: { root.lang = "es"; root.initState() }
     onFileChanged: reload()
   }
 
+  // Card collapse: "card-default" holds the state for VMs never toggled
+  // (expanded|collapsed, set with scripts/set-card-default); "collapsed.json"
+  // remembers each toggle by libvirt UUID.
+  property bool cardsCollapsedByDefault: false
+  property var collapsed: ({})
+
+  FileView {
+    id: cardDefaultView
+    path: root.stateDir + "/card-default"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.cardsCollapsedByDefault = String(text() || "").trim() === "collapsed"
+    onLoadFailed: { root.cardsCollapsedByDefault = false; root.initState() }
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: collapsedView
+    path: root.stateDir + "/collapsed.json"
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      var parsed = {}
+      try { parsed = JSON.parse(text()) } catch (e) {}
+      root.collapsed = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+    }
+    onLoadFailed: { root.collapsed = {}; root.initState() }
+    onFileChanged: reload()
+  }
+
+  function isCollapsed(uuid) {
+    return collapsed[uuid] !== undefined ? collapsed[uuid] === true : cardsCollapsedByDefault
+  }
+  function toggleCollapsed(uuid) {
+    var c = Object.assign({}, collapsed)
+    c[uuid] = !isCollapsed(uuid)
+    collapsed = c
+    collapsedView.setText(JSON.stringify(c) + "\n")
+  }
+
+  // A missing file can't be watched: create the state files with their
+  // defaults, then reload them.
+  function initState() { if (!initStateProc.running) initStateProc.running = true }
   Process {
-    id: createLang
-    command: ["sh", "-c", 'mkdir -p "$(dirname "$1")" && { [ -s "$1" ] || echo es > "$1"; }', "sh", root.langFile]
-    onExited: function(code) { if (code === 0) langView.reload() }
+    id: initStateProc
+    command: ["sh", "-c",
+      'mkdir -p "$1" && cd "$1" && { [ -s lang ] || echo es > lang; } '
+      + '&& { [ -s card-default ] || echo expanded > card-default; } '
+      + '&& { [ -s collapsed.json ] || echo "{}" > collapsed.json; }',
+      "sh", root.stateDir]
+    onExited: function(code) {
+      if (code !== 0) return
+      langView.reload(); cardDefaultView.reload(); collapsedView.reload()
+    }
   }
 
   readonly property var strings: ({
@@ -50,7 +98,8 @@ Panel {
       start: "Iniciar", shutdown: "Apagar", force: "Forzar apagado", console: "Abrir consola",
       resume: "Reanudar", manager: "Abrir virt-manager", refresh: "Actualizar",
       copyIp: "Copiar IP", copied: "IP copiada", waitingIp: "Esperando IP…",
-      cpu: "CPU", ram: "RAM", disk: "Disco", cache: "caché", failed: "No se pudo iniciar"
+      cpu: "CPU", ram: "RAM", disk: "Disco", cache: "caché", failed: "No se pudo iniciar",
+      collapse: "Contraer", expand: "Expandir"
     },
     en: {
       title: "Virtual machines", allStopped: "All stopped", of: "of", running: "running",
@@ -61,7 +110,8 @@ Panel {
       start: "Start", shutdown: "Shut down", force: "Force off", console: "Open console",
       resume: "Resume", manager: "Open virt-manager", refresh: "Refresh",
       copyIp: "Copy IP", copied: "IP copied", waitingIp: "Waiting for IP…",
-      cpu: "CPU", ram: "RAM", disk: "Disk", cache: "cache", failed: "Failed to start"
+      cpu: "CPU", ram: "RAM", disk: "Disk", cache: "cache", failed: "Failed to start",
+      collapse: "Collapse", expand: "Expand"
     }
   })
   function t(key) {
@@ -389,6 +439,8 @@ Panel {
       : vm.pending === "resuming" ? root.t("resuming")
       : paused ? root.t("stPaused")
       : running ? root.t("stRunning") : vm.state
+    readonly property bool collapsed: root.isCollapsed(vm.uuid)
+    readonly property bool expanded: running && !collapsed
     property bool ipCopied: false
 
     radius: Style.cornerRadius > 0 ? Style.space(10) : 0
@@ -438,7 +490,10 @@ Panel {
             font.bold: true
           }
           Text {
-            text: card.statusText + (card.running && card.vm.vcpus > 0 && !card.busy ? " · " + card.vm.vcpus + " vCPU" : "")
+            text: card.running && card.collapsed && !card.busy
+              ? [card.vm.cpu >= 0 ? Math.round(card.vm.cpu) + "% " + root.t("cpu") : "",
+                 card.vm.ramTotal > 0 ? root.fmtMem(card.vm.ramUsed) : ""].filter(Boolean).join(" · ") || card.statusText
+              : card.statusText + (card.running && card.vm.vcpus > 0 && !card.busy ? " · " + card.vm.vcpus + " vCPU" : "")
             textFormat: Text.PlainText
             color: card.busy || card.paused ? root.dim : root.accent
             font.family: root.fontFamily
@@ -475,11 +530,19 @@ Panel {
             ? root.svc.forceStop(card.vm.uuid)
             : root.svc.stop(card.vm.uuid)
         }
+        PanelActionButton {
+          visible: card.running
+          iconText: card.collapsed ? "󰅀" : "󰅃"
+          tooltipText: card.collapsed ? root.t("expand") : root.t("collapse")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.toggleCollapsed(card.vm.uuid)
+        }
       }
 
       // IP chip
       Rectangle {
-        visible: card.running
+        visible: card.expanded
         height: ipRow.implicitHeight + Style.space(8)
         width: ipRow.implicitWidth + Style.space(16)
         radius: Style.cornerRadius > 0 ? height / 2 : 0
@@ -526,7 +589,7 @@ Panel {
 
       // Metrics
       Column {
-        visible: card.running
+        visible: card.expanded
         width: parent.width
         spacing: Style.space(8)
 

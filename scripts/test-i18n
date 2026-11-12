@@ -1,0 +1,49 @@
+#!/bin/bash
+# Verifies the i18n catalogs: one per Omarchy language, same keys and
+# placeholders as en.json, every key Panel.qml uses is defined, and the
+# old plugin-level language switch is gone.
+DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
+I18N="$DIR/i18n"
+REGISTRY=/usr/share/omarchy/default/i18n/locales.json
+FALLBACK="en da ar fi fr el hu hi is ja ko es-MX fil pt sv tr vi ur bn ca si ta th uz it zh-CN pl lt ga nl no ru id de sw fa ms uk ro cs sr he bg sk hr sl zh-TW et lv pt-BR"
+fail=0
+bad() { echo "✗ $*"; fail=1; }
+
+if [[ -f $REGISTRY ]]; then expected=$(jq -r 'keys[]' "$REGISTRY" | sort)
+else expected=$(tr ' ' '\n' <<<"$FALLBACK" | sort); fi
+actual=$(ls "$I18N" 2>/dev/null | sed -n 's/\.json$//p' | sort)
+missing=$(comm -23 <(echo "$expected") <(echo "$actual") | tr '\n' ' ')
+extra=$(comm -13 <(echo "$expected") <(echo "$actual") | tr '\n' ' ')
+[[ -z $missing && -z $extra ]] && echo "✓ $(wc -l <<<"$expected") catalogs match the Omarchy languages" \
+  || bad "catalog files: missing [${missing}] extra [${extra}]"
+
+EN="$I18N/en.json"
+if [[ -f $EN ]]; then
+  # Every string of a value (plain or plural forms) with its %N placeholders.
+  ph() { jq -r --arg k "$2" '.[$k] | if type=="string" then . else .other end' "$1" | grep -o '%[0-9]' | sort | tr '\n' ' '; }
+  enkeys=$(jq -r 'keys[]' "$EN" | sort)
+  for f in "$I18N"/*.json; do
+    n=$(basename "$f")
+    jq -e . "$f" >/dev/null 2>&1 || { bad "$n is not valid JSON"; continue; }
+    [[ "$(jq -r 'keys[]' "$f" | sort)" == "$enkeys" ]] || bad "$n keys differ from en.json"
+    jq -e 'all(.[]; (type=="string" and length>0) or (type=="object" and has("other") and all(.[]; type=="string" and length>0)))' "$f" >/dev/null \
+      || bad "$n has an empty value or a plural object without \"other\""
+    while read -r k; do
+      want=$(ph "$EN" "$k")
+      jq -r --arg k "$k" '.[$k] | if type=="string" then . else .[] end' "$f" | while IFS= read -r v; do
+        [[ "$(grep -o '%[0-9]' <<<"$v" | sort | tr '\n' ' ')" == "$want" ]] || echo "x"
+      done | grep -q x && bad "$n: \"$k\" placeholders differ from en.json ($want)"
+    done <<<"$enkeys"
+  done
+  used=$(grep -ohE 'tr\.tn?\("[a-zA-Z.]+"' "$DIR/Panel.qml" | sed 's/.*("//; s/"//' | sort -u)
+  [[ "$used" == "$enkeys" ]] && echo "✓ Panel.qml uses exactly the keys in en.json" \
+    || bad "Panel.qml keys vs en.json: $(diff <(echo "$used") <(echo "$enkeys") | grep '^[<>]' | tr '\n' ' ')"
+else
+  bad "i18n/en.json missing"
+fi
+
+if grep -rqE 'set-language|dix\.qemu/lang' "$DIR/Panel.qml" "$DIR/README.md" "$DIR/scripts" --exclude=test-i18n 2>/dev/null || [[ -e $DIR/scripts/set-language ]]; then
+  bad "references to set-language / dix.qemu/lang remain"
+else echo "✓ no plugin-level language switch left"; fi
+
+exit $fail

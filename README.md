@@ -15,6 +15,7 @@ QEMU/libvirt VM manager widget for Omarchy. Monitor and control your virtual mac
 - Lists all VMs registered in libvirt, grouped into active and stopped
 - Live CPU, RAM and disk meters for running VMs. RAM shows guest-reported usage plus reclaimable cache (like `htop`) when the virtio balloon driver is present, host RSS otherwise
 - Click-to-copy IP address
+- Collapse a running VM card to one line showing CPU and RAM. Each card remembers its state
 - Start, graceful shutdown, force off (while a shutdown is pending) and resume paused VMs
 - Shows transitional states ("Starting…", "Shutting down…")
 - Opens the VM console when it starts, and closes it automatically when the VM shuts down (also when shut down from inside the guest)
@@ -95,6 +96,17 @@ The plugin displays text in Spanish by default. To change it:
 
 The change applies instantly, no shell restart needed. The choice is stored in `~/.local/state/dix.qemu/lang`, so it survives `omarchy plugin update`.
 
+### Card default
+
+Running VM cards start expanded. To start VMs you haven't toggled yet collapsed:
+
+```bash
+~/.config/omarchy/plugins/dix.qemu/scripts/set-card-default collapsed
+~/.config/omarchy/plugins/dix.qemu/scripts/set-card-default expanded
+```
+
+Each card you toggle keeps its own state in `~/.local/state/dix.qemu/collapsed.json`.
+
 ### Sudo
 
 Only the one-time host setup above uses sudo. The plugin itself never does: it uses `qemu:///system` through your `libvirt` group membership.
@@ -119,6 +131,7 @@ Widget de Omarchy para administrar máquinas virtuales de QEMU/libvirt. Monitore
 - Lista todas las VMs registradas en libvirt, separadas en activas y apagadas
 - Barras en vivo de CPU, RAM y disco para las VMs encendidas. La RAM muestra el uso real dentro de la VM más la caché liberable (como `htop`) si la VM tiene el driver virtio balloon; si no, muestra lo que ocupa en el host
 - Copia la IP con un clic
+- Contrae la tarjeta de una VM encendida a una línea con CPU y RAM. Cada tarjeta recuerda su estado
 - Iniciar, apagar, forzar apagado (mientras se está apagando) y reanudar VMs en pausa
 - Muestra estados intermedios ("Iniciando…", "Apagando…")
 - Abre la consola de la VM al iniciarla y la cierra sola cuando la VM se apaga (también si se apaga desde dentro)
@@ -198,6 +211,17 @@ El plugin muestra los textos en español por defecto. Para cambiarlo:
 ```
 
 El cambio se aplica al instante, sin reiniciar el shell. La elección se guarda en `~/.local/state/dix.qemu/lang`, así que se mantiene después de `omarchy plugin update`.
+
+### Estado inicial de las tarjetas
+
+Las tarjetas de las VMs encendidas empiezan expandidas. Para que las VMs que aún no has tocado empiecen contraídas:
+
+```bash
+~/.config/omarchy/plugins/dix.qemu/scripts/set-card-default collapsed
+~/.config/omarchy/plugins/dix.qemu/scripts/set-card-default expanded
+```
+
+Cada tarjeta que contraes o expandes guarda su estado en `~/.local/state/dix.qemu/collapsed.json`.
 
 ### Sudo
 

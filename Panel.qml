@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Layouts
-import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -11,63 +10,7 @@ Panel {
   ipcTarget: "dix.qemu"
   manageIpc: false
 
-  // Language: "es" (default) or "en". Stored outside the plugin folder so it
-  // survives plugin updates; scripts/set-language writes it and the panel
-  // picks it up live.
-  readonly property string langFile: Quickshell.env("HOME") + "/.local/state/dix.qemu/lang"
-  property string lang: "es"
-
-  FileView {
-    id: langView
-    path: root.langFile
-    watchChanges: true
-    printErrors: false
-    onLoaded: {
-      var v = String(text() || "").trim()
-      root.lang = (v === "en" || v === "es") ? v : "es"
-    }
-    // A missing file can't be watched: create it with the default, then reload.
-    onLoadFailed: {
-      root.lang = "es"
-      if (!createLang.running) createLang.running = true
-    }
-    onFileChanged: reload()
-  }
-
-  Process {
-    id: createLang
-    command: ["sh", "-c", 'mkdir -p "$(dirname "$1")" && { [ -s "$1" ] || echo es > "$1"; }', "sh", root.langFile]
-    onExited: function(code) { if (code === 0) langView.reload() }
-  }
-
-  readonly property var strings: ({
-    es: {
-      title: "Máquinas virtuales", allStopped: "Todas apagadas", of: "de", running: "en ejecución",
-      active: "Activas", stopped: "Apagadas", none: "No hay máquinas virtuales en libvirt",
-      noLibvirt: "No se pudo conectar a libvirt", loading: "Cargando…",
-      stRunning: "En ejecución", stOff: "Apagada", stPaused: "En pausa", stCrashed: "Falló",
-      starting: "Iniciando…", stopping: "Apagando…", resuming: "Reanudando…",
-      start: "Iniciar", shutdown: "Apagar", force: "Forzar apagado", console: "Abrir consola",
-      resume: "Reanudar", manager: "Abrir virt-manager", refresh: "Actualizar",
-      copyIp: "Copiar IP", copied: "IP copiada", waitingIp: "Esperando IP…",
-      cpu: "CPU", ram: "RAM", disk: "Disco", cache: "caché", failed: "No se pudo iniciar"
-    },
-    en: {
-      title: "Virtual machines", allStopped: "All stopped", of: "of", running: "running",
-      active: "Active", stopped: "Stopped", none: "No virtual machines in libvirt",
-      noLibvirt: "Could not connect to libvirt", loading: "Loading…",
-      stRunning: "Running", stOff: "Stopped", stPaused: "Paused", stCrashed: "Crashed",
-      starting: "Starting…", stopping: "Shutting down…", resuming: "Resuming…",
-      start: "Start", shutdown: "Shut down", force: "Force off", console: "Open console",
-      resume: "Resume", manager: "Open virt-manager", refresh: "Refresh",
-      copyIp: "Copy IP", copied: "IP copied", waitingIp: "Waiting for IP…",
-      cpu: "CPU", ram: "RAM", disk: "Disk", cache: "cache", failed: "Failed to start"
-    }
-  })
-  function t(key) {
-    var s = strings[lang] || strings.es
-    return s[key] !== undefined ? s[key] : key
-  }
+  Translations { id: tr; directory: Qt.resolvedUrl("i18n") }
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -158,12 +101,12 @@ Panel {
 
         PanelHero {
           width: parent.width
-          title: root.t("title")
-          meta: !service.loaded ? root.t("loading")
-            : service.error ? root.t("noLibvirt")
+          title: tr.t("title")
+          meta: !service.loaded ? tr.t("loading")
+            : service.error ? tr.t("noLibvirt")
             : root.anyRunning
-              ? service.runningCount + " " + root.t("of") + " " + service.vms.length + " " + root.t("running")
-              : root.t("allStopped")
+              ? tr.tn("header.running", service.runningCount).arg(I18n.formatNumber(service.runningCount)).arg(I18n.formatNumber(service.vms.length))
+              : tr.t("allStopped")
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
@@ -194,14 +137,14 @@ Panel {
               spacing: Style.space(2)
               PanelActionButton {
                 iconText: "󰑐"
-                tooltipText: root.t("refresh")
+                tooltipText: tr.t("refresh")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: service.refresh()
               }
               PanelActionButton {
                 iconText: "󰙵"
-                tooltipText: root.t("manager")
+                tooltipText: tr.t("manager")
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: { service.openManager(); root.close() }
@@ -219,7 +162,7 @@ Panel {
           horizontalAlignment: Text.AlignHCenter
           topPadding: Style.space(10)
           bottomPadding: Style.space(10)
-          text: service.error ? root.t("noLibvirt") : root.t("none")
+          text: service.error ? tr.t("noLibvirt") : tr.t("none")
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: root.dim
@@ -234,7 +177,7 @@ Panel {
           spacing: Style.space(8)
 
           PanelSectionHeader {
-            text: root.t("active")
+            text: tr.t("active")
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
@@ -255,7 +198,7 @@ Panel {
           spacing: Style.space(4)
 
           PanelSectionHeader {
-            text: root.t("stopped")
+            text: tr.t("stopped")
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
@@ -384,11 +327,11 @@ Panel {
     readonly property bool running: vm.state === "running"
     readonly property bool paused: vm.state === "paused"
     readonly property bool busy: vm.pending !== ""
-    readonly property string statusText: vm.pending === "starting" ? root.t("starting")
-      : vm.pending === "stopping" ? root.t("stopping")
-      : vm.pending === "resuming" ? root.t("resuming")
-      : paused ? root.t("stPaused")
-      : running ? root.t("stRunning") : vm.state
+    readonly property string statusText: vm.pending === "starting" ? tr.t("starting")
+      : vm.pending === "stopping" ? tr.t("stopping")
+      : vm.pending === "resuming" ? tr.t("resuming")
+      : paused ? tr.t("stPaused")
+      : running ? tr.t("stRunning") : vm.state
     property bool ipCopied: false
 
     radius: Style.cornerRadius > 0 ? Style.space(10) : 0
@@ -449,7 +392,7 @@ Panel {
         PanelActionButton {
           visible: card.running
           iconText: "󰍹"
-          tooltipText: root.t("console")
+          tooltipText: tr.t("console")
           foreground: root.foreground
           fontFamily: root.fontFamily
           onClicked: { root.svc.openConsole(card.vm.uuid); root.close() }
@@ -457,7 +400,7 @@ Panel {
         PanelActionButton {
           visible: card.paused
           iconText: "󰐊"
-          tooltipText: root.t("resume")
+          tooltipText: tr.t("resume")
           foreground: root.foreground
           fontFamily: root.fontFamily
           enabled: !card.busy
@@ -467,7 +410,7 @@ Panel {
           // Graceful shutdown; while it is in progress, offer force-off instead.
           visible: card.vm.pending !== "starting"
           iconText: card.vm.pending === "stopping" ? "󰅙" : "󰐥"
-          tooltipText: card.vm.pending === "stopping" ? root.t("force") : root.t("shutdown")
+          tooltipText: card.vm.pending === "stopping" ? tr.t("force") : tr.t("shutdown")
           foreground: root.foreground
           hoverColor: root.urgent
           fontFamily: root.fontFamily
@@ -502,7 +445,7 @@ Panel {
           }
           Text {
             anchors.verticalCenter: parent.verticalCenter
-            text: card.ipCopied ? root.t("copied") : (card.vm.ip !== "" ? card.vm.ip : root.t("waitingIp"))
+            text: card.ipCopied ? tr.t("copied") : (card.vm.ip !== "" ? card.vm.ip : tr.t("waitingIp"))
             textFormat: Text.PlainText
             color: card.vm.ip !== "" ? root.foreground : root.dim
             font.family: root.fontFamily
@@ -519,7 +462,7 @@ Panel {
         }
         PanelToolTip {
           visible: ipMouse.containsMouse && !card.ipCopied
-          text: root.t("copyIp")
+          text: tr.t("copyIp")
           fontFamily: root.fontFamily
         }
       }
@@ -532,24 +475,24 @@ Panel {
 
         Meter {
           icon: "󰻠"
-          label: root.t("cpu")
+          label: tr.t("cpu")
           known: card.vm.cpu >= 0
           frac: card.vm.cpu / 100
           value: Math.round(card.vm.cpu) + "%"
         }
         Meter {
           icon: "󰍛"
-          label: root.t("ram")
+          label: tr.t("ram")
           known: card.vm.ramTotal > 0
           frac: card.vm.ramTotal > 0 ? card.vm.ramUsed / card.vm.ramTotal : 0
           extraFrac: card.vm.ramTotal > 0 ? card.vm.ramCache / card.vm.ramTotal : 0
           value: root.fmtMem(card.vm.ramUsed)
-            + (card.vm.ramCache > 0 ? " + " + root.fmtMem(card.vm.ramCache) + " " + root.t("cache") : "")
+            + (card.vm.ramCache > 0 ? " + " + root.fmtMem(card.vm.ramCache) + " " + tr.t("cache") : "")
             + " / " + root.fmtMem(card.vm.ramTotal)
         }
         Meter {
           icon: "󰋊"
-          label: root.t("disk")
+          label: tr.t("disk")
           known: card.vm.diskTotal > 0
           frac: card.vm.diskTotal > 0 ? card.vm.diskUsed / card.vm.diskTotal : 0
           value: root.fmtGb(card.vm.diskUsed) + " / " + root.fmtGb(card.vm.diskTotal) + " GB"
@@ -607,8 +550,8 @@ Panel {
         visible: !rowMouse.containsMouse
         Layout.maximumWidth: row.width * 0.5
         elide: Text.ElideRight
-        text: row.errorText !== "" ? "󰀦 " + root.t("failed")
-          : row.crashed ? root.t("stCrashed") : root.t("stOff")
+        text: row.errorText !== "" ? "󰀦 " + tr.t("failed")
+          : row.crashed ? tr.t("stCrashed") : tr.t("stOff")
         textFormat: Text.PlainText
         color: row.crashed || row.errorText !== "" ? root.urgent : root.dim
         font.family: root.fontFamily
@@ -619,7 +562,7 @@ Panel {
         spacing: Style.space(6)
         Text {
           anchors.verticalCenter: parent.verticalCenter
-          text: root.t("start")
+          text: tr.t("start")
           textFormat: Text.PlainText
           color: root.accent
           font.family: root.fontFamily

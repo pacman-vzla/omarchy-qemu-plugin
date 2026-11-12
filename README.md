@@ -86,14 +86,7 @@ omarchy-shell dix.qemu refresh
 
 ### Language
 
-The plugin displays text in Spanish by default. To change it:
-
-```bash
-~/.config/omarchy/plugins/dix.qemu/scripts/set-language en   # English
-~/.config/omarchy/plugins/dix.qemu/scripts/set-language es   # Spanish
-```
-
-The change applies instantly, no shell restart needed. The choice is stored in `~/.local/state/dix.qemu/lang`, so it survives `omarchy plugin update`.
+The panel follows the language set in Omarchy under Setup › Language, and changes as soon as you change it. All Omarchy languages are included.
 
 ### Sudo
 
@@ -190,14 +183,7 @@ omarchy-shell dix.qemu refresh
 
 ### Idioma
 
-El plugin muestra los textos en español por defecto. Para cambiarlo:
-
-```bash
-~/.config/omarchy/plugins/dix.qemu/scripts/set-language en   # inglés
-~/.config/omarchy/plugins/dix.qemu/scripts/set-language es   # español
-```
-
-El cambio se aplica al instante, sin reiniciar el shell. La elección se guarda en `~/.local/state/dix.qemu/lang`, así que se mantiene después de `omarchy plugin update`.
+El panel sigue el idioma configurado en Omarchy en Setup › Language, y cambia en cuanto lo cambias. Se incluyen todos los idiomas de Omarchy.
 
 ### Sudo
 
